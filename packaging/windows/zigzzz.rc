@@ -1,12 +1,15 @@
 // Windows resources: the application icon and the File Properties details.
+//
+// build.zig defines ZIGZZZ_VERSION ("0.1.2") and ZIGZZZ_VERSION_NUMBERS
+// (0,1,2,0) from build.zig.zon, so the version only changes in one place.
 
 #include <winver.h>
 
 1 ICON "../icons/zigzzz.ico"
 
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION     0, 1, 1, 0
-PRODUCTVERSION  0, 1, 1, 0
+FILEVERSION     ZIGZZZ_VERSION_NUMBERS
+PRODUCTVERSION  ZIGZZZ_VERSION_NUMBERS
 FILEOS          VOS_NT_WINDOWS32
 FILETYPE        VFT_APP
 BEGIN
@@ -16,12 +19,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName",      "Addonay"
             VALUE "FileDescription",  "Workspace"
-            VALUE "FileVersion",      "0.1.1"
+            VALUE "FileVersion",      ZIGZZZ_VERSION
             VALUE "InternalName",     "zigzzz"
             VALUE "LegalCopyright",   "Copyright (c) 2026 Addonay. All rights reserved."
             VALUE "OriginalFilename", "zigzzz.exe"
             VALUE "ProductName",      "zigzzz"
-            VALUE "ProductVersion",   "0.1.1"
+            VALUE "ProductVersion",   ZIGZZZ_VERSION
         END
     END
 

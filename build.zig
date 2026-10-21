@@ -81,7 +81,15 @@ pub fn build(b: *std.Build) void {
     const windows = target.result.os.tag == .windows;
 
     // Icon and version details for Explorer and the taskbar.
-    if (windows) module.addWin32ResourceFile(.{ .file = b.path("packaging/windows/zigzzz.rc") });
+    // The version comes from build.zig.zon: "0.1.2" is passed as the string
+    // ZIGZZZ_VERSION and as ZIGZZZ_VERSION_NUMBERS 0,1,2,0.
+    if (windows) module.addWin32ResourceFile(.{
+        .file = b.path("packaging/windows/zigzzz.rc"),
+        .flags = &.{
+            b.fmt("/dZIGZZZ_VERSION=\"{s}\"", .{manifest.version}),
+            b.fmt("/dZIGZZZ_VERSION_NUMBERS={s}", .{versionNumbers(b, manifest.version)}),
+        },
+    });
 
     const exe = b.addExecutable(.{ .name = name, .root_module = module });
 
@@ -109,4 +117,19 @@ pub fn build(b: *std.Build) void {
     size_run.setCwd(b.path("."));
     size_run.stdio = .inherit;
     b.step("size", "Display the size of each built release").dependOn(&size_run.step);
+}
+
+
+/// "0.1.2" as "0,1,2,0", the four numbers Windows version resources expect.
+fn versionNumbers(b: *std.Build, version: []const u8) []const u8 {
+    var numbers: [4][]const u8 = .{ "0", "0", "0", "0" };
+    var parts = std.mem.tokenizeAny(u8, version, ".-+");
+
+    for (&numbers) |*number| {
+        const part = parts.next() orelse break;
+        _ = std.fmt.parseInt(u16, part, 10) catch break;
+        number.* = part;
+    }
+
+    return b.fmt("{s},{s},{s},{s}", .{ numbers[0], numbers[1], numbers[2], numbers[3] });
 }
