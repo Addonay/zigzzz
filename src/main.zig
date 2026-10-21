@@ -6,8 +6,36 @@ const chrome = @import("window.zig");
 const theme = @import("theme.zig");
 const exporter = @import("export.zig");
 const f = @import("geometry.zig").f;
+const assets = @import("assets");
+const build_options = @import("build_options");
+
+/// Reverse-DNS identifier; also the Wayland app_id, which desktops match
+/// against `io.github.addonay.zigzzz.desktop` to find the icon.
+pub const app_id = "io.github.addonay.zigzzz";
 
 pub fn main(init: std.process.Init) !void {
+    run(init) catch |err| {
+        reportFatal(err);
+        return err;
+    };
+}
+
+/// A GUI build has no console on Windows, so a startup failure would just
+/// vanish. Show SDL's own explanation in a dialog and on stderr.
+fn reportFatal(err: anyerror) void {
+    var buffer: [1024]u8 = undefined;
+    const detail = sdl.errors.get() orelse "";
+    const message = std.fmt.bufPrintSentinel(&buffer, "Workspace could not start ({s}).\n\n{s}", .{ @errorName(err), detail }, 0) catch
+        "Workspace could not start.";
+
+    std.debug.print("{s}\n", .{message});
+    sdl.message_box.showSimple(.{ .error_dialog = true }, "Workspace", message, null) catch {};
+}
+
+fn run(init: std.process.Init) !void {
+    // Must precede SDL_Init so the identifier reaches the windowing system.
+    try sdl.setAppMetadata("Workspace", build_options.version, app_id);
+
     try sdl.init(.{ .video = true });
     defer sdl.shutdown();
 
@@ -19,6 +47,8 @@ pub fn main(init: std.process.Init) !void {
     });
     defer window.deinit();
     try window.setMinimumSize(theme.minimum_width, theme.minimum_height);
+
+    setWindowIcon(window);
 
     var renderer = try Renderer.init(init.gpa, window);
     defer renderer.deinit();
@@ -104,6 +134,18 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
+/// Taskbar and title icon from the embedded logo. Purely cosmetic, so a
+/// failure leaves the platform default in place.
+fn setWindowIcon(window: sdl.video.Window) void {
+    const stream = sdl.io_stream.Stream.initFromConstMem(assets.app_icon) catch return;
+    defer stream.deinit() catch {};
+
+    const icon = sdl.image.loadPngIo(stream) catch return;
+    defer icon.deinit();
+
+    window.setIcon(icon) catch {};
+}
+
 // Discover tests beside their implementations without running the application.
 test {
     _ = @import("text.zig");
@@ -114,4 +156,5 @@ test {
     _ = @import("render.zig");
     _ = @import("ui.zig");
     _ = @import("chart_image.zig");
+    _ = @import("regex.zig");
 }

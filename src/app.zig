@@ -13,6 +13,7 @@ const reports = @import("report.zig");
 const settings = @import("settings.zig");
 const charts = @import("charts.zig");
 const kml = @import("kml.zig");
+const regex = @import("regex.zig");
 
 const Rect = geo.Rect;
 const Color = geo.Color;
@@ -91,6 +92,17 @@ pub const App = struct {
     dialog_path: Text = .{},
     dialog_state: std.atomic.Value(u8) = .init(0),
     dialog_page: Page = .qos,
+    dialog_kind: DialogKind = .file,
+    dialog_location: [1024:0]u8 = @splat(0),
+
+    /// Scrollable part of the sidebar's context section, if any.
+    sidebar_list: Rect = .{},
+    sidebar_scroll: f32 = 0,
+    sidebar_scroll_max: f32 = 0,
+
+    /// Saved settings changed outside the Settings page (KML defaults);
+    /// written once no text field is being edited.
+    persist_pending: bool = false,
 
     pub fn init(self: *App, allocator: std.mem.Allocator, io: std.Io, window: sdl.video.Window, renderer: *gfx.Renderer) !void {
         const path = try settingsPath(allocator);
@@ -132,6 +144,8 @@ pub const App = struct {
     }
 
     pub fn deinit(self: *App) void {
+        self.flushSave();
+
         if (self.report) |*report| report.deinit();
         if (self.book) |*book| book.deinit();
 
@@ -237,6 +251,8 @@ pub const App = struct {
             .mouse_wheel => |wheel| {
                 if (self.popup.open) {
                     self.popup.scroll = @max(0, self.popup.scroll - wheel.scroll_y * 40);
+                } else if (self.chrome.sidebar_open and self.sidebar_list.contains(self.ui.mouse_x, self.ui.mouse_y)) {
+                    self.sidebar_scroll = std.math.clamp(self.sidebar_scroll - wheel.scroll_y * 40, 0, self.sidebar_scroll_max);
                 } else if (self.focus_chart == null) {
                     self.scroll_target = std.math.clamp(self.scroll_target - wheel.scroll_y * 64, 0, self.scroll_max);
                 }
@@ -307,7 +323,7 @@ pub const App = struct {
 
             self.book = book;
             self.kml_path = self.path;
-            self.mapping = kml.Mapping.init(&self.book.?);
+            self.mapping = kml.Mapping.initWith(&self.book.?, &self.saved);
         } else {
             defer book.deinit();
 
@@ -321,7 +337,13 @@ pub const App = struct {
             self.report = report;
             self.qos_path = self.path;
 
+            // New KPIs join their default group, like the built-in ones.
+            const known = self.saved.rule_count;
+
             for (report.names) |name| _ = self.saved.include(name) catch continue;
+            for (known..self.saved.rule_count) |index| self.saved.groupByDefault(index);
+
+            if (self.saved.rule_count > known) self.queueSave();
 
             self.area = 0;
             self.status_filter = 0;
@@ -367,7 +389,37 @@ pub const App = struct {
             .{ .name = "All files", .pattern = "*" },
         };
 
+        self.dialog_kind = .file;
         sdl.dialog.showOpenFile(App, pickedFile, self, self.window, &filters, null, false);
+    }
+
+    /// Pick a folder for the KML output, starting in `location`.
+    pub fn browseFolder(self: *App, location: []const u8) void {
+        if (self.dialog_state.load(.acquire) != 0) return;
+
+        self.dialog_page = self.page;
+        self.dialog_kind = .folder;
+        self.dialog_state.store(1, .release);
+
+        const length = @min(location.len, self.dialog_location.len);
+        @memcpy(self.dialog_location[0..length], location[0..length]);
+        self.dialog_location[length] = 0;
+
+        const start: ?[:0]const u8 = if (length > 0) self.dialog_location[0..length :0] else null;
+        sdl.dialog.showOpenFolder(App, pickedFile, self, self.window, start, false);
+    }
+
+    /// Mirror saved settings into the draft and write them soon.
+    pub fn queueSave(self: *App) void {
+        self.draft = self.saved;
+        self.persist_pending = true;
+    }
+
+    pub fn flushSave(self: *App) void {
+        if (!self.persist_pending) return;
+
+        self.persist_pending = false;
+        self.saved.save(self.allocator, self.io, self.settings_path) catch |err| self.failure(err);
     }
 
     pub fn toggleTheme(self: *App) void {
@@ -381,11 +433,18 @@ pub const App = struct {
 
     pub fn draw(self: *App) void {
         if (self.dialog_state.load(.acquire) == 2) {
-            self.navigate(self.dialog_page);
-            self.path = self.dialog_path;
-            self.importFile();
+            if (self.dialog_kind == .folder) {
+                if (self.book != null) self.mapping.folder = self.dialog_path;
+            } else {
+                self.navigate(self.dialog_page);
+                self.path = self.dialog_path;
+                self.importFile();
+            }
+
             self.dialog_state.store(0, .release);
         }
+
+        if (self.ui.focused_text == null) self.flushSave();
 
         const p = self.palette();
         const r = self.renderer;
@@ -399,6 +458,7 @@ pub const App = struct {
         self.ui.begin(p, self.popup.open or self.busy or modal);
         self.layout.update(self.width, self.height, self.chrome.sidebar_open, self.chrome.sidebar_width);
 
+        self.sidebar_list = .{};
         if (self.chrome.sidebar_open) self.drawSidebar();
 
         const content = self.layout.rect("content");
@@ -930,7 +990,10 @@ pub const App = struct {
                 }
             },
 
-            .column => self.mapping.columns[self.popup.row] = if (index == 0) null else index - 1,
+            .column => {
+                self.mapping.columns[self.popup.row] = if (index == 0) null else index - 1;
+                kml.remember(self, self.popup.row);
+            },
 
             .primary => self.overlay_primary = index,
 
@@ -940,6 +1003,28 @@ pub const App = struct {
 
             .export_menu => self.pending_export = index == 1,
         }
+    }
+
+    /// A popup row that matched the search, with its closeness score.
+    const Ranked = struct { index: usize, score: f32, span: regex.Span };
+
+    fn rankedBefore(_: void, a: Ranked, b: Ranked) bool {
+        if (a.score != b.score) return a.score < b.score;
+        return a.index < b.index;
+    }
+
+    /// First non-empty value under a column header, to help recognise it.
+    fn columnSample(self: *const App, index: usize) []const u8 {
+        if (self.popup.target != .column or index == 0) return "";
+
+        const book = &(self.book orelse return "");
+
+        for (1..@min(book.row_count, 8)) |row| {
+            const value = std.mem.trim(u8, book.cell(row, index - 1), " \t\r\n");
+            if (value.len > 0) return value;
+        }
+
+        return "";
     }
 
     fn drawPopup(self: *App) void {
@@ -952,22 +1037,38 @@ pub const App = struct {
         defer ui.layer = 0;
 
         const is_menu = self.popup.target == .export_menu;
+        const is_column = self.popup.target == .column;
         const total = self.popupCount();
         const searchable = !is_menu and total > 7;
         const row_height: f32 = if (is_menu) 48 else 32;
 
+        // Rank every item against the search. The query is a regular
+        // expression; invalid patterns fall back to plain text.
+        const query = regex.Query.init(self.popup.query.slice());
+
+        var ranked: [1024]Ranked = undefined;
         var count: usize = 0;
+
         for (0..total) |index| {
-            if (contains(self.popupLabel(index), self.popup.query.slice())) count += 1;
+            if (count == ranked.len) break;
+
+            const label = self.popupLabel(index);
+            const score = query.score(label) orelse continue;
+
+            ranked[count] = .{ .index = index, .score = score, .span = query.find(label).? };
+            count += 1;
         }
 
+        if (query.text.len > 0) std.sort.pdq(Ranked, ranked[0..count], {}, rankedBefore);
+
         const header: f32 = if (searchable) 48 else 4;
-        const width = @max(if (is_menu) @as(f32, 260) else 220, self.popup.anchor.w);
+        const minimum: f32 = if (is_menu) 260 else if (is_column) 380 else 220;
+        const width = @min(@max(minimum, self.popup.anchor.w), self.width - 16);
         const wanted = header + @max(1, f(count)) * row_height + 4;
-        const height = @min(@min(340, wanted), self.height - 48);
+        const height = @min(@min(if (is_column) @as(f32, 420) else 340, wanted), self.height - 48);
 
         var x = self.popup.anchor.x;
-        if (is_menu) x = self.popup.anchor.right() - width;
+        if (is_menu or is_column) x = self.popup.anchor.right() - width;
 
         const rect = Rect{
             .x = std.math.clamp(x, 8, self.width - width - 8),
@@ -976,32 +1077,40 @@ pub const App = struct {
             .h = height,
         };
 
+        ui.sink(rect);
         r.shadow(rect, theme.radius_large, 16, 6, fade(p.shadow, 1.4));
         r.border(rect, p.popover, p.border, theme.radius_large);
 
         if (searchable) {
-            _ = ui.iconField(.search, &self.popup.query, "Search…", .{ .x = rect.x + 6, .y = rect.y + 6, .w = rect.w - 12, .h = 34 });
+            var placeholder_buffer: [96]u8 = undefined;
+            const noun = if (is_column) "columns" else "items";
+            const placeholder = std.fmt.bufPrint(&placeholder_buffer, "Search {d} {s} — regex works", .{ total, noun }) catch "Search…";
+
+            _ = ui.iconField(.search, &self.popup.query, placeholder, .{ .x = rect.x + 6, .y = rect.y + 6, .w = rect.w - 12, .h = 34 });
             r.hline(rect.x, rect.right(), rect.y + header - 2, p.border);
         }
 
         const list = Rect{ .x = rect.x + 4, .y = rect.y + header, .w = rect.w - 8, .h = rect.h - header - 4 };
         const previous = r.clipWithin(list);
 
-        var shown: usize = 0;
+        var chosen: ?usize = null;
 
-        for (0..total) |index| {
+        for (ranked[0..count], 0..) |item, position| {
+            const index = item.index;
             const label = self.popupLabel(index);
-            if (!contains(label, self.popup.query.slice())) continue;
-
-            const row = Rect{ .x = list.x, .y = list.y + f(shown) * row_height - self.popup.scroll, .w = list.w, .h = row_height };
-            shown += 1;
+            const row = Rect{ .x = list.x, .y = list.y + f(position) * row_height - self.popup.scroll, .w = list.w, .h = row_height };
 
             if (row.bottom() < list.y or row.y > list.bottom()) continue;
 
             const clicked = ui.hit(row);
             const amount = ui.hoverAmount(row);
+            const top_match = position == 0 and query.text.len > 0;
 
-            if (amount > 0.01) r.box(row, fade(p.accent, amount), theme.radius);
+            if (amount > 0.01) {
+                r.box(row, fade(p.accent, amount), theme.radius);
+            } else if (top_match) {
+                r.box(row, fade(p.accent, 0.5), theme.radius);
+            }
 
             if (is_menu) {
                 const icon: gfx.Icon = if (index == 0) .file_down else .image;
@@ -1011,31 +1120,73 @@ pub const App = struct {
                 r.text(label, row.x + 36, row.y + 4, p.popover_foreground, .strong);
                 r.text(detail, row.x + 36, row.y + 24, p.muted_foreground, .small);
             } else {
-                var buffer: [256]u8 = undefined;
-                const fitted = r.fit(&buffer, label, row.w - 44, .body);
+                // Sample value on the right for spreadsheet columns.
+                var label_room = row.w - 44;
+                const sample = self.columnSample(index);
 
-                r.leading(fitted, .{ .x = row.x + 10, .y = row.y, .w = row.w, .h = row.h }, p.popover_foreground, .body);
+                if (sample.len > 0) {
+                    var sample_buffer: [128]u8 = undefined;
+                    const fitted_sample = r.fit(&sample_buffer, sample, row.w * 0.36, .small);
+                    const sample_width = r.textWidth(fitted_sample, .small);
+
+                    r.leading(fitted_sample, .{ .x = row.right() - 34 - sample_width, .y = row.y, .w = sample_width, .h = row.h }, p.muted_foreground, .small);
+                    label_room -= sample_width + 12;
+                }
+
+                var buffer: [256]u8 = undefined;
+                const fitted = r.fit(&buffer, label, label_room, .body);
+                const truncated = fitted.ptr != label.ptr;
+                const visible_end = if (truncated) fitted.len -| "…".len else fitted.len;
+
+                const span = item.span;
+                const highlight = query.text.len > 0 and span.end > span.start and span.end <= visible_end;
+                const text_y = row.y + (row.h - r.textHeight(.body)) / 2;
+
+                if (highlight) {
+                    // Matched part in the brand color.
+                    var cursor = row.x + 10;
+                    const pieces = [_]struct { text: []const u8, matched: bool }{
+                        .{ .text = fitted[0..span.start], .matched = false },
+                        .{ .text = fitted[span.start..span.end], .matched = true },
+                        .{ .text = fitted[span.end..], .matched = false },
+                    };
+
+                    for (pieces) |piece| {
+                        const role: gfx.FontRole = if (piece.matched) .strong else .body;
+
+                        r.text(piece.text, cursor, text_y, if (piece.matched) p.brand else p.popover_foreground, role);
+                        cursor += r.textWidth(piece.text, role);
+                    }
+                } else {
+                    r.text(fitted, row.x + 10, text_y, p.popover_foreground, .body);
+                }
 
                 if (self.popupSelected(index)) {
                     r.icon(.check, .{ .x = row.right() - 26, .y = row.centerY() - 8, .w = 16, .h = 16 }, p.brand);
                 }
             }
 
-            if (clicked) {
-                self.choosePopup(index);
+            if (clicked) chosen = index;
+        }
 
-                const keep_open = self.popup.target == .overlay or self.popup.target == .focus_overlay;
+        // Enter picks the closest match.
+        const typing = ui.focused_text == &self.popup.query;
+        if (searchable and typing and ui.submitted and count > 0) chosen = ranked[0].index;
 
-                if (!keep_open) {
-                    self.popup.open = false;
-                    ui.focused_text = null;
-                }
+        if (chosen) |index| {
+            self.choosePopup(index);
+
+            const keep_open = self.popup.target == .overlay or self.popup.target == .focus_overlay;
+
+            if (!keep_open) {
+                self.popup.open = false;
+                ui.focused_text = null;
             }
         }
 
-        if (shown == 0) r.centered("No matches", list, p.muted_foreground, .small);
+        if (count == 0) r.centered("No matches", list, p.muted_foreground, .small);
 
-        self.popup.scroll = @min(self.popup.scroll, @max(0, f(shown) * row_height - list.h));
+        self.popup.scroll = @min(self.popup.scroll, @max(0, f(count) * row_height - list.h));
         r.restoreClip(previous);
 
         const outside = !rect.contains(ui.mouse_x, ui.mouse_y) and !self.popup.anchor.contains(ui.mouse_x, ui.mouse_y);
@@ -1117,6 +1268,8 @@ pub const App = struct {
         r.text("Press Esc to cancel", dialog.x + 24, dialog.y + 114, p.muted_foreground, .small);
     }
 };
+
+const DialogKind = enum { file, folder };
 
 pub const Target = enum { area, group, operator, column, primary, overlay, focus_overlay, export_menu };
 

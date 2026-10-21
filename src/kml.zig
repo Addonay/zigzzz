@@ -4,15 +4,22 @@ const Text = @import("text.zig").Text;
 const Workbook = @import("workbook.zig").Workbook;
 const Document = @import("document.zig").Document;
 const number = @import("report.zig").number;
+const Preferences = @import("preferences.zig").Preferences;
 const theme = @import("theme.zig");
 const geo = @import("geometry.zig");
 const Rect = geo.Rect;
 const f = geo.f;
 const fade = geo.fade;
 
+/// One KML field. Aliases are listed in order of preference: detection
+/// tries every column against the first alias before moving to the next.
+///
+/// The mapping follows the original WFAppKml (`Form1.cs`) reading the
+/// LTE cell export: each row is one cell, keyed by `cellname`, and its
+/// sector wedge uses that cell's own azimuth, range, and beamwidth.
 const Field = struct { key: []const u8, label: []const u8, aliases: []const []const u8, required: bool = false };
 pub const fields = [_]Field{
-    .{ .key = "SiteID", .label = "Cell name", .aliases = &.{ "cellname", "cell_name", "site_id" }, .required = true },
+    .{ .key = "SiteID", .label = "Cell name", .aliases = &.{ "cellname", "cell_name" }, .required = true },
     .{ .key = "CellID", .label = "Cell ID", .aliases = &.{ "cellid", "cell_id" } },
     .{ .key = "CI", .label = "Unique ID", .aliases = &.{ "unique_id", "ci" }, .required = true },
     .{ .key = "WCell", .label = "Period", .aliases = &.{ "period_start_time", "wcell" } },
@@ -37,8 +44,8 @@ pub const fields = [_]Field{
     .{ .key = "Availability", .label = "Availability (%)", .aliases = &.{ "rna_4g", "availability" } },
     .{ .key = "Drop", .label = "PS drop rate", .aliases = &.{ "ps_drop_call_rate", "drop_rate" } },
     .{ .key = "xTxR", .label = "MIMO", .aliases = &.{ "mimo_config", "mimo" } },
-    .{ .key = "ConfigurationGuard", .label = "Downlink data volume", .aliases = &.{"total_data_volume_dl"} },
-    .{ .key = "FOE", .label = "Field engineer", .aliases = &.{"foe"} },
+    .{ .key = "Configuration", .label = "Configuration", .aliases = &.{ "mimo_config", "configuration" } },
+    .{ .key = "FOE", .label = "Field engineer", .aliases = &.{ "foe", "rfengineer" } },
     .{ .key = "TAC", .label = "County", .aliases = &.{ "county", "tac" } },
     .{ .key = "Clutter", .label = "Town", .aliases = &.{ "town", "clutter" } },
     .{ .key = "ENodeBId", .label = "eNodeB ID", .aliases = &.{ "siteid", "enodeb_id" } },
@@ -51,31 +58,108 @@ pub const fields = [_]Field{
     .{ .key = "VENDOR", .label = "Vendor", .aliases = &.{"vendor"} },
 };
 
+/// Index of the field with `key`, checked at compile time.
+fn fieldIndex(comptime key: []const u8) usize {
+    inline for (fields, 0..) |field, index| {
+        if (comptime std.mem.eql(u8, field.key, key)) return index;
+    }
+
+    @compileError("unknown KML field " ++ key);
+}
+
+const cell_name = fieldIndex("SiteID");
+const cell_id = fieldIndex("CellID");
+const unique_id = fieldIndex("CI");
+const latitude_field = fieldIndex("LAT");
+const longitude_field = fieldIndex("LONG");
+const spectrum_field = fieldIndex("Spectrum");
+const bandwidth_field = fieldIndex("Bandwidth");
+const azimuth_field = fieldIndex("Sector_AZ");
+const range_field = fieldIndex("Sector_Range");
+const beamwidth_field = fieldIndex("Sector_HBW");
+const speed_field = fieldIndex("Speed");
+const volume_field = fieldIndex("Volume");
+const configuration_field = fieldIndex("Configuration");
+
+/// Fields joined with "/" when several rows share a cell name, as the
+/// original tool does for cell IDs, unique IDs, bandwidths, and
+/// configurations.
+const joined_fields = [_]usize{ cell_id, unique_id, bandwidth_field, configuration_field };
+
+pub const max_extras = 16;
+
 pub const Mapping = struct {
-    columns: [fields.len + 16]?usize = @splat(null),
-    labels: [16]Text = @splat(.{}),
+    columns: [fields.len + max_extras]?usize = @splat(null),
+    labels: [max_extras]Text = @splat(.{}),
     extra_count: usize = 0,
+    /// Fields whose column came from the remembered defaults.
+    remembered: [fields.len]bool = @splat(false),
+
     sectors: bool = true,
     limit_range: bool = false,
-    output: Text = .{},
 
+    folder: Text = .{},
+    filename: Text = .{},
+    /// Whether `folder` is the remembered default output folder.
+    default_folder: bool = false,
+
+    /// Auto-detected mapping, writing `<workbook>.kml` beside the workbook.
     pub fn init(book: *const Workbook) Mapping {
         var result = Mapping{};
+
+        for (0..fields.len) |index| result.columns[index] = detect(book, index);
+
+        result.folder.set(std.fs.path.dirname(book.path) orelse ".");
+
+        var buffer: [512]u8 = undefined;
+        const stem = std.fs.path.stem(book.path);
+        result.filename.set(std.fmt.bufPrint(&buffer, "{s}.kml", .{if (stem.len > 0) stem else "output"}) catch "output.kml");
+
+        return result;
+    }
+
+    /// Auto-detected mapping with the remembered defaults applied on top.
+    /// Remembered headers missing from this workbook fall back to detection.
+    pub fn initWith(book: *const Workbook, defaults: *const Preferences) Mapping {
+        var result = init(book);
+
         for (fields, 0..) |field, index| {
-            for (0..book.column_count) |column| {
-                const header = std.mem.trim(u8, book.cell(0, column), " \t\r\n");
-                var matches = false;
-                for (field.aliases) |alias| matches = matches or normalizedEqual(header, alias);
-                if (matches) {
-                    result.columns[index] = column;
-                    break;
-                }
+            const header = defaults.kmlColumn(field.key) orelse continue;
+
+            if (header.len == 0) {
+                result.columns[index] = null;
+                result.remembered[index] = true;
+            } else if (findHeader(book, header)) |column| {
+                result.columns[index] = column;
+                result.remembered[index] = true;
             }
         }
-        var buffer: [512]u8 = undefined;
-        const directory = std.fs.path.dirname(book.path) orelse ".";
-        result.output.set(std.fmt.bufPrint(&buffer, "{s}/output.kml", .{directory}) catch "output.kml");
+
+        for (defaults.kml_extras[0..@min(defaults.kml_extra_count, max_extras)], 0..) |*extra, index| {
+            result.labels[index] = extra.label;
+            result.columns[fields.len + index] = findHeader(book, extra.header.slice());
+            result.extra_count = index + 1;
+        }
+
+        result.sectors = defaults.kml_sectors;
+        result.limit_range = defaults.kml_limit_range;
+
+        if (defaults.kml_folder.length > 0) {
+            result.folder = defaults.kml_folder;
+            result.default_folder = true;
+        }
+
         return result;
+    }
+
+    /// `folder/filename`, adding `.kml` when the name has no extension.
+    pub fn outputPath(self: *const Mapping, buffer: []u8) []const u8 {
+        const folder = std.mem.trimEnd(u8, std.mem.trim(u8, self.folder.slice(), " \t"), "/");
+        const name = std.mem.trim(u8, self.filename.slice(), " \t");
+        const extension = if (std.fs.path.extension(name).len == 0) ".kml" else "";
+
+        if (folder.len == 0) return std.fmt.bufPrint(buffer, "{s}{s}", .{ name, extension }) catch name;
+        return std.fmt.bufPrint(buffer, "{s}/{s}{s}", .{ folder, name, extension }) catch name;
     }
 
     fn value(self: *const Mapping, book: *const Workbook, row: usize, field: usize) []const u8 {
@@ -85,7 +169,7 @@ pub const Mapping = struct {
 
     fn numeric(self: *const Mapping, book: *const Workbook, row: usize, field: usize, fallback: f64) f64 {
         const value_text = self.value(book, row, field);
-        if (field == 7 or field == 8) {
+        if (field == spectrum_field or field == bandwidth_field) {
             var end: usize = 0;
             while (end < value_text.len and (std.ascii.isDigit(value_text[end]) or value_text[end] == '.' or value_text[end] == '+' or value_text[end] == '-')) end += 1;
             return number(value_text[0..end]) orelse fallback;
@@ -93,6 +177,76 @@ pub const Mapping = struct {
         return number(value_text) orelse fallback;
     }
 };
+
+/// Best column for a field: an exact alias match, otherwise the shortest
+/// header that contains a distinctive alias (four or more characters).
+fn detect(book: *const Workbook, index: usize) ?usize {
+    const field = fields[index];
+
+    // Aliases are in preference order, so `cellname` beats a `siteid`
+    // column that appears earlier in the sheet.
+    for (field.aliases) |alias| {
+        for (0..book.column_count) |column| {
+            const header = std.mem.trim(u8, book.cell(0, column), " \t\r\n");
+            if (normalizedEqual(header, alias)) return column;
+        }
+    }
+
+    var best: ?usize = null;
+    var best_extra: usize = std.math.maxInt(usize);
+
+    for (0..book.column_count) |column| {
+        var header_buffer: [256]u8 = undefined;
+        const header = normalize(&header_buffer, book.cell(0, column));
+
+        for (field.aliases) |alias| {
+            var alias_buffer: [64]u8 = undefined;
+            const wanted = normalize(&alias_buffer, alias);
+
+            if (wanted.len < 4 or std.mem.indexOf(u8, header, wanted) == null) continue;
+
+            const extra = header.len - wanted.len;
+
+            if (extra < best_extra) {
+                best = column;
+                best_extra = extra;
+            }
+        }
+    }
+
+    return best;
+}
+
+/// Column whose header equals `name`, exactly or ignoring case and
+/// punctuation.
+pub fn findHeader(book: *const Workbook, name: []const u8) ?usize {
+    const wanted = std.mem.trim(u8, name, " \t\r\n");
+    if (wanted.len == 0) return null;
+
+    for (0..book.column_count) |column| {
+        if (std.ascii.eqlIgnoreCase(std.mem.trim(u8, book.cell(0, column), " \t\r\n"), wanted)) return column;
+    }
+
+    for (0..book.column_count) |column| {
+        if (normalizedEqual(book.cell(0, column), wanted)) return column;
+    }
+
+    return null;
+}
+
+/// Lowercase letters and digits only.
+fn normalize(buffer: []u8, value: []const u8) []const u8 {
+    var length: usize = 0;
+
+    for (value) |character| {
+        if (!std.ascii.isAlphanumeric(character) or length == buffer.len) continue;
+
+        buffer[length] = std.ascii.toLower(character);
+        length += 1;
+    }
+
+    return buffer[0..length];
+}
 
 fn normalizedEqual(a: []const u8, b: []const u8) bool {
     var left: usize = 0;
@@ -127,13 +281,26 @@ fn missingRequired(app: *const App) usize {
 }
 
 fn exportKml(app: *App) void {
-    const count = generate(app.allocator, app.io, &app.book.?, &app.mapping) catch |err| {
+    const summary = generate(app.allocator, app.io, &app.book.?, &app.mapping) catch |err| {
         app.failure(err);
         return;
     };
 
-    var buffer: [512]u8 = undefined;
-    app.success(std.fmt.bufPrint(&buffer, "Exported {d} sites to {s}", .{ count, app.mapping.output.slice() }) catch "KML exported.");
+    var path_buffer: [1024]u8 = undefined;
+    var buffer: [1400]u8 = undefined;
+    const output = app.mapping.outputPath(&path_buffer);
+
+    if (summary.repaired > 0) {
+        app.success(std.fmt.bufPrint(&buffer, "Exported {d} cells to {s}. {d} impossible sector values were replaced with defaults ({d} m range, {d}° beamwidth).", .{
+            summary.sites,
+            output,
+            summary.repaired,
+            default_sector_range,
+            default_beamwidth,
+        }) catch "KML exported.");
+    } else {
+        app.success(std.fmt.bufPrint(&buffer, "Exported {d} cells to {s}", .{ summary.sites, output }) catch "KML exported.");
+    }
 }
 
 pub fn topbar(app: *App, area: Rect) void {
@@ -232,6 +399,83 @@ fn panelTitle(app: *App, x: f32, y: *f32, title: []const u8, subtitle: []const u
     y.* += r.textHeight(.small) + 12;
 }
 
+// ── Remembered defaults ────────────────────────────────────────────────
+
+/// Remember the column picked for field `index` so every workbook opened
+/// later starts with the same choice.
+pub fn remember(app: *App, index: usize) void {
+    if (index >= fields.len) return;
+
+    const header = if (app.mapping.columns[index]) |column| app.book.?.cell(0, column) else "";
+
+    app.saved.setKmlColumn(fields[index].key, header);
+    app.mapping.remembered[index] = true;
+    app.queueSave();
+}
+
+/// Forget remembered column choices and detect them again.
+fn resetColumns(app: *App) void {
+    const book = &app.book.?;
+
+    app.saved.kml_column_count = 0;
+
+    for (0..fields.len) |index| {
+        app.mapping.columns[index] = detect(book, index);
+        app.mapping.remembered[index] = false;
+    }
+
+    app.queueSave();
+    app.notify("Column choices reset. Mappings are detected from each workbook again.");
+}
+
+fn rememberedCount(app: *const App) usize {
+    return std.mem.count(bool, &app.mapping.remembered, &.{true});
+}
+
+/// Mirror description columns, switches, and the default folder into the
+/// saved settings whenever they change on the page.
+fn sync(app: *App) void {
+    const mapping = &app.mapping;
+    const saved = &app.saved;
+    const book = &app.book.?;
+    var changed = false;
+
+    if (saved.kml_sectors != mapping.sectors or saved.kml_limit_range != mapping.limit_range) {
+        saved.kml_sectors = mapping.sectors;
+        saved.kml_limit_range = mapping.limit_range;
+        changed = true;
+    }
+
+    if (mapping.default_folder and !std.mem.eql(u8, saved.kml_folder.slice(), mapping.folder.slice())) {
+        saved.kml_folder = mapping.folder;
+        changed = true;
+    }
+
+    var extras_differ = saved.kml_extra_count != mapping.extra_count;
+
+    for (0..@min(mapping.extra_count, saved.kml_extra_count)) |index| {
+        const header = if (mapping.columns[fields.len + index]) |column| book.cell(0, column) else "";
+        const extra = &saved.kml_extras[index];
+
+        if (!std.mem.eql(u8, extra.label.slice(), mapping.labels[index].slice())) extras_differ = true;
+        if (!std.mem.eql(u8, extra.header.slice(), header)) extras_differ = true;
+    }
+
+    if (extras_differ) {
+        for (0..mapping.extra_count) |index| {
+            const header = if (mapping.columns[fields.len + index]) |column| book.cell(0, column) else "";
+            saved.kml_extras[index] = .{ .label = mapping.labels[index], .header = .init(header) };
+        }
+
+        saved.kml_extra_count = mapping.extra_count;
+        changed = true;
+    }
+
+    if (changed) app.queueSave();
+}
+
+// ── Page ───────────────────────────────────────────────────────────────
+
 /// Label on the left, column dropdown on the right.
 fn mappingRow(app: *App, rect: Rect, index: usize, body: Rect) void {
     const r = app.renderer;
@@ -240,23 +484,46 @@ fn mappingRow(app: *App, rect: Rect, index: usize, body: Rect) void {
 
     if (rect.bottom() < body.y or rect.y > body.bottom()) return;
 
-    const dropdown_width = @min(260, rect.w * 0.55);
-    const label_width = rect.w - dropdown_width - 28;
+    const dropdown_width = @min(250, rect.w * 0.52);
+    const label_width = rect.w - dropdown_width - 44;
 
     var buffer: [128]u8 = undefined;
     const label = r.fit(&buffer, field.label, label_width - (if (field.required) @as(f32, 14) else 0), .body);
     r.leading(label, .{ .x = rect.x + 16, .y = rect.y, .w = label_width, .h = rect.h }, p.card_foreground, .body);
-
-    const missing = field.required and app.mapping.columns[index] == null;
 
     if (field.required) {
         r.text("*", rect.x + 16 + r.textWidth(label, .body) + 4, rect.y + (rect.h - r.textHeight(.body)) / 2, p.destructive, .body);
     }
 
     const dropdown = Rect{ .x = rect.right() - 12 - dropdown_width, .y = rect.centerY() - 16, .w = dropdown_width, .h = 32 };
+
+    if (app.mapping.remembered[index]) {
+        const marker = Rect{ .x = dropdown.x - 18, .y = rect.centerY() - 6, .w = 12, .h = 12 };
+
+        app.renderer.circle(marker.centerX(), marker.centerY(), 3, p.brand);
+        app.ui.setTooltip(marker, "Your choice — used for every workbook");
+    }
+
     app.dropdown(columnLabel(app, index), dropdown, .column, index);
 
-    if (missing) r.outline(dropdown, fade(p.destructive, 0.7), theme.radius);
+    if (field.required and app.mapping.columns[index] == null) r.outline(dropdown, fade(p.destructive, 0.7), theme.radius);
+}
+
+/// Label and description on the left of a settings-style row.
+fn rowLabel(app: *App, rect: Rect, label: []const u8, detail: []const u8) void {
+    const r = app.renderer;
+    const p = app.palette();
+
+    if (detail.len == 0) {
+        r.leading(label, .{ .x = rect.x + 20, .y = rect.y, .w = rect.w, .h = rect.h }, p.card_foreground, .strong);
+        return;
+    }
+
+    const total = r.textHeight(.strong) + r.textHeight(.small);
+    const top = rect.y + (rect.h - total) / 2;
+
+    r.text(label, rect.x + 20, top, p.card_foreground, .strong);
+    r.text(detail, rect.x + 20, top + r.textHeight(.strong), p.muted_foreground, .small);
 }
 
 pub fn page(app: *App, content: Rect) void {
@@ -271,82 +538,54 @@ pub fn page(app: *App, content: Rect) void {
     const previous = r.clipWithin(body);
     var y = body.y + 24 - app.scroll;
 
-    // Required columns
-    panelTitle(app, x, &y, "Required columns", "Every site needs a name, a unique ID, and coordinates.");
+    // Columns
+    if (rememberedCount(app) > 0) {
+        const label = "Reset to auto-detect";
+        const reset_width = ui.smallLabelButtonWidth(label);
+        const reset = Rect{ .x = x + width - reset_width, .y = y + 4, .w = reset_width, .h = 30 };
 
-    var required: [8]usize = undefined;
-    var required_count: usize = 0;
-
-    for (fields, 0..) |field, index| {
-        if (!field.required) continue;
-        required[required_count] = index;
-        required_count += 1;
+        if (ui.smallLabelButton(.rotate, label, reset, .ghost)) resetColumns(app);
+        ui.setTooltip(reset, "Forget your column choices for future workbooks");
     }
 
-    const two_columns = width >= 720;
-    const columns: usize = if (two_columns) 2 else 1;
+    panelTitle(app, x, &y, "Columns", "Pick a column for each field. Your choices are remembered for every workbook you open.");
+
+    const columns: usize = if (width >= 720) 2 else 1;
     const column_width = width / f(columns);
+    const rows = (fields.len + columns - 1) / columns;
+    const card = Rect{ .x = x, .y = y, .w = width, .h = f(rows) * row_height + 8 };
+    panel(app, card);
 
-    const required_rows = (required_count + columns - 1) / columns;
-    const required_card = Rect{ .x = x, .y = y, .w = width, .h = f(required_rows) * row_height + 8 };
-    panel(app, required_card);
-
-    for (required[0..required_count], 0..) |index, at| {
+    for (0..fields.len) |index| {
+        const row = index / columns;
         const rect = Rect{
-            .x = x + f(at % columns) * column_width,
-            .y = required_card.y + 4 + f(at / columns) * row_height,
+            .x = x + f(index % columns) * column_width,
+            .y = card.y + 4 + f(row) * row_height,
             .w = column_width,
             .h = row_height,
         };
 
-        mappingRow(app, rect, index, body);
-    }
-
-    y = required_card.bottom() + 32;
-
-    // Optional columns
-    panelTitle(app, x, &y, "Optional columns", "Detected automatically from the header row. Unmapped fields are left out of descriptions.");
-
-    const optional_count = fields.len - required_count;
-    const optional_rows = (optional_count + columns - 1) / columns;
-    const optional_card = Rect{ .x = x, .y = y, .w = width, .h = f(optional_rows) * row_height + 8 };
-    panel(app, optional_card);
-
-    var shown: usize = 0;
-
-    for (fields, 0..) |field, index| {
-        if (field.required) continue;
-
-        const row = shown / columns;
-        const rect = Rect{
-            .x = x + f(shown % columns) * column_width,
-            .y = optional_card.y + 4 + f(row) * row_height,
-            .w = column_width,
-            .h = row_height,
-        };
-
-        if (shown % columns == 0 and row > 0) {
-            r.hline(x + 16, optional_card.right() - 16, rect.y, fade(p.border, 0.6));
+        if (index % columns == 0 and row > 0) {
+            r.hline(x + 16, card.right() - 16, rect.y, fade(p.border, 0.6));
         }
 
         mappingRow(app, rect, index, body);
-        shown += 1;
     }
 
-    if (two_columns) r.vline(x + column_width, optional_card.y + 12, optional_card.bottom() - 12, fade(p.border, 0.6));
+    if (columns == 2) r.vline(x + column_width, card.y + 12, card.bottom() - 12, fade(p.border, 0.6));
 
-    y = optional_card.bottom() + 32;
+    y = card.bottom() + 32;
 
-    // Extra description columns
+    // Description columns
     const add_label = "Add column";
     const add_width = ui.labelButtonWidth(add_label) - 8;
 
-    if (app.mapping.extra_count < 16) {
+    if (app.mapping.extra_count < max_extras) {
         const add_rect = Rect{ .x = x + width - add_width, .y = y, .w = add_width, .h = 32 };
         if (ui.labelButton(.plus, add_label, add_rect, .outline, false)) app.mapping.extra_count += 1;
     }
 
-    panelTitle(app, x, &y, "Description columns", "Extra columns appended to each placemark description.");
+    panelTitle(app, x, &y, "Description columns", "Extra columns appended to each placemark description. Also remembered.");
 
     if (app.mapping.extra_count == 0) {
         const empty = Rect{ .x = x, .y = y, .w = width, .h = 56 };
@@ -357,11 +596,11 @@ pub fn page(app: *App, content: Rect) void {
 
         y = empty.bottom() + 32;
     } else {
-        const card = Rect{ .x = x, .y = y, .w = width, .h = f(app.mapping.extra_count) * row_height + 8 };
-        panel(app, card);
+        const extras = Rect{ .x = x, .y = y, .w = width, .h = f(app.mapping.extra_count) * row_height + 8 };
+        panel(app, extras);
 
         for (0..app.mapping.extra_count) |index| {
-            const row = Rect{ .x = x + 12, .y = card.y + 4 + f(index) * row_height, .w = width - 24, .h = row_height };
+            const row = Rect{ .x = x + 12, .y = extras.y + 4 + f(index) * row_height, .w = width - 24, .h = row_height };
             const control_y = row.centerY() - 16;
 
             if (index > 0) r.hline(row.x, row.right(), row.y, fade(p.border, 0.6));
@@ -385,48 +624,105 @@ pub fn page(app: *App, content: Rect) void {
             }
         }
 
-        y = card.bottom() + 32;
+        y = extras.bottom() + 32;
     }
 
     // Output
-    panelTitle(app, x, &y, "Output", "Placemarks for every site, with optional sector polygons.");
+    panelTitle(app, x, &y, "Output", "Where the KML file is written, and what it contains.");
 
-    const output_card = Rect{ .x = x, .y = y, .w = width, .h = 64 * 2 + 84 };
-    panel(app, output_card);
+    const field_row: f32 = 60;
+    const switch_row: f32 = 64;
+    const output = Rect{ .x = x, .y = y, .w = width, .h = field_row * 2 + switch_row * 3 };
+    panel(app, output);
 
+    const control_x = x + 170;
+    const control_right = output.right() - 20;
+
+    // Folder: type a path or browse for one.
+    const folder_row = Rect{ .x = x, .y = output.y, .w = width, .h = field_row };
+    rowLabel(app, folder_row, "Folder", "");
+
+    const browse_width = ui.labelButtonWidth("Browse") - 8;
+    const browse = Rect{ .x = control_right - browse_width, .y = folder_row.centerY() - 17, .w = browse_width, .h = 34 };
+
+    _ = ui.iconField(.folder, &app.mapping.folder, "/path/to/folder", .{
+        .x = control_x,
+        .y = browse.y,
+        .w = browse.x - 8 - control_x,
+        .h = 34,
+    });
+
+    if (ui.labelButton(.folder_open, "Browse", browse, .outline, false)) app.browseFolder(app.mapping.folder.slice());
+    ui.setTooltip(browse, "Choose the output folder");
+
+    // File name
+    const name_row = Rect{ .x = x, .y = folder_row.bottom(), .w = width, .h = field_row };
+    r.hline(x + 16, output.right() - 16, name_row.y, fade(p.border, 0.6));
+    rowLabel(app, name_row, "File name", "");
+
+    _ = ui.iconField(.file_down, &app.mapping.filename, "sites.kml", .{
+        .x = control_x,
+        .y = name_row.centerY() - 17,
+        .w = control_right - control_x,
+        .h = 34,
+    });
+
+    // Switches
     const switches = [_]struct { label: []const u8, description: []const u8, value: *bool }{
-        .{ .label = "Generate sectors", .description = "Draw a wedge for each sector from azimuth, range, and beamwidth.", .value = &app.mapping.sectors },
-        .{ .label = "Limit sector range by band", .description = "Shorten wedges for higher frequency bands.", .value = &app.mapping.limit_range },
+        .{
+            .label = "Use this folder by default",
+            .description = "New workbooks export here instead of beside the workbook.",
+            .value = &app.mapping.default_folder,
+        },
+        .{
+            .label = "Generate sectors",
+            .description = "Draw a wedge for each sector from azimuth, range, and beamwidth.",
+            .value = &app.mapping.sectors,
+        },
+        .{
+            .label = "Limit sector range by band",
+            .description = "Shorten wedges for higher frequency bands.",
+            .value = &app.mapping.limit_range,
+        },
     };
 
     for (switches, 0..) |item, index| {
-        const row = Rect{ .x = x, .y = output_card.y + f(index) * 64, .w = width, .h = 64 };
+        const row = Rect{ .x = x, .y = name_row.bottom() + f(index) * switch_row, .w = width, .h = switch_row };
 
-        if (index > 0) r.hline(x + 16, output_card.right() - 16, row.y, fade(p.border, 0.6));
-
-        const total = r.textHeight(.strong) + r.textHeight(.small);
-        const top = row.y + (row.h - total) / 2;
-
-        r.text(item.label, x + 20, top, p.card_foreground, .strong);
-        r.text(item.description, x + 20, top + r.textHeight(.strong), p.muted_foreground, .small);
+        r.hline(x + 16, output.right() - 16, row.y, fade(p.border, 0.6));
+        rowLabel(app, row, item.label, item.description);
 
         const switch_rect = Rect{ .x = row.right() - 20 - 36, .y = row.centerY() - 10, .w = 36, .h = 20 };
-        if (ui.toggle(item.value.*, switch_rect)) item.value.* = !item.value.*;
+
+        if (ui.toggle(item.value.*, switch_rect)) {
+            item.value.* = !item.value.*;
+
+            // Turning the default folder off forgets it.
+            if (index == 0 and !app.mapping.default_folder) {
+                app.saved.kml_folder.set("");
+                app.queueSave();
+            }
+        }
     }
 
-    const path_y = output_card.y + 128;
-    r.hline(x + 16, output_card.right() - 16, path_y, fade(p.border, 0.6));
-    r.text("Output file", x + 20, path_y + 12, p.card_foreground, .strong);
-    _ = ui.iconField(.file_down, &app.mapping.output, "output.kml", .{ .x = x + 20, .y = path_y + 38, .w = width - 40, .h = 34 });
+    // Destination preview
+    y = output.bottom() + 12;
 
-    y = output_card.bottom() + 12;
+    var path_buffer: [1024]u8 = undefined;
+    var preview_buffer: [1100]u8 = undefined;
+    const target_path = app.mapping.outputPath(&path_buffer);
+    const preview = std.fmt.bufPrint(&preview_buffer, "Saves to {s}. An existing file there is replaced.", .{target_path}) catch "";
+
+    var fit_buffer: [1100]u8 = undefined;
     r.icon(.info, .{ .x = x, .y = y + 2, .w = 14, .h = 14 }, p.muted_foreground);
-    r.text("An existing file at this path is replaced when you export.", x + 22, y, p.muted_foreground, .small);
+    r.text(r.fit(&fit_buffer, preview, width - 22, .small), x + 22, y, p.muted_foreground, .small);
     y += 48;
 
     app.scroll_max = @max(0, y + app.scroll - body.bottom());
     r.restoreClip(previous);
     ui.scrollbar(body, app.scroll, app.scroll_max);
+
+    sync(app);
 }
 
 const Site = struct {
@@ -444,11 +740,28 @@ const Site = struct {
     beamwidth: f64,
 };
 
-pub fn generate(allocator: std.mem.Allocator, io: std.Io, book: *const Workbook, mapping: *const Mapping) !usize {
+/// Longest believable sector reach (LTE timing advance tops out near 100 km).
+const max_sector_range: f64 = 100_000;
+const default_sector_range: f64 = 500;
+const default_beamwidth: f64 = 65;
+
+pub const Summary = struct {
+    sites: usize,
+    /// Sector ranges or beamwidths replaced by defaults because the
+    /// spreadsheet value was missing or impossible.
+    repaired: usize,
+};
+
+pub fn generate(allocator: std.mem.Allocator, io: std.Io, book: *const Workbook, mapping: *const Mapping) !Summary {
+    var repaired: usize = 0;
+
     for (fields, 0..) |field, index| {
         if (field.required and mapping.columns[index] == null) return error.MapAllRequiredColumns;
     }
-    if (std.mem.eql(u8, mapping.output.slice(), book.path)) return error.OutputWouldReplaceSourceWorkbook;
+    var path_buffer: [1024]u8 = undefined;
+    const output = mapping.outputPath(&path_buffer);
+    if (std.mem.trim(u8, mapping.filename.slice(), " \t").len == 0) return error.ChooseAnOutputFileName;
+    if (std.mem.eql(u8, output, book.path)) return error.OutputWouldReplaceSourceWorkbook;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const memory = arena.allocator();
@@ -458,19 +771,19 @@ pub fn generate(allocator: std.mem.Allocator, io: std.Io, book: *const Workbook,
     for (1..book.row_count) |row| {
         var values: [fields.len + 16][]const u8 = @splat("");
         for (0..fields.len + mapping.extra_count) |field| values[field] = mapping.value(book, row, field);
-        if (values[0].len == 0 and values[2].len == 0) continue;
-        if (values[0].len == 0) values[0] = values[2];
-        const latitude = mapping.numeric(book, row, 5, std.math.nan(f64));
-        const longitude = mapping.numeric(book, row, 6, std.math.nan(f64));
+        if (values[cell_name].len == 0 and values[unique_id].len == 0) continue;
+        if (values[cell_name].len == 0) values[cell_name] = values[unique_id];
+        const latitude = mapping.numeric(book, row, latitude_field, std.math.nan(f64));
+        const longitude = mapping.numeric(book, row, longitude_field, std.math.nan(f64));
         if (!std.math.isFinite(latitude) or !std.math.isFinite(longitude) or @abs(latitude) > 90 or @abs(longitude) > 180) return error.InvalidSiteCoordinates;
-        const speed = mapping.numeric(book, row, 20, 0) / 1000;
-        const volume = mapping.numeric(book, row, 21, 0);
-        const bandwidth = mapping.numeric(book, row, 8, 0);
+        const speed = mapping.numeric(book, row, speed_field, 0) / 1000;
+        const volume = mapping.numeric(book, row, volume_field, 0);
+        const bandwidth = mapping.numeric(book, row, bandwidth_field, 0);
         const traffic = if (bandwidth > 0) volume / bandwidth else 0;
-        const entry = try indices.getOrPut(memory, values[0]);
+        const entry = try indices.getOrPut(memory, values[cell_name]);
         if (entry.found_existing) {
             const site = &sites.items[entry.value_ptr.*];
-            for ([_]usize{ 1, 2, 8, 24 }) |field| {
+            for (joined_fields) |field| {
                 if (values[field].len > 0) site.values[field] = try memory.print("{s}{s}{s}", .{ site.values[field], if (site.values[field].len > 0) "/" else "", values[field] });
             }
             for (fields.len..fields.len + mapping.extra_count) |field| {
@@ -490,17 +803,17 @@ pub fn generate(allocator: std.mem.Allocator, io: std.Io, book: *const Workbook,
                 .speed_sum = speed,
                 .volume = volume,
                 .traffic = traffic,
-                .spectrum = mapping.numeric(book, row, 7, 700),
-                .azimuth = mapping.numeric(book, row, 9, 32.5),
-                .range = mapping.numeric(book, row, 10, 500),
-                .beamwidth = mapping.numeric(book, row, 11, 65),
+                .spectrum = mapping.numeric(book, row, spectrum_field, 700),
+                .azimuth = mapping.numeric(book, row, azimuth_field, 32.5),
+                .range = mapping.numeric(book, row, range_field, default_sector_range),
+                .beamwidth = mapping.numeric(book, row, beamwidth_field, default_beamwidth),
             });
         }
     }
     if (sites.items.len == 0) return error.NoSiteRows;
     std.mem.sort(Site, sites.items, {}, struct {
         fn less(_: void, a: Site, b: Site) bool {
-            return std.mem.lessThan(u8, a.values[0], b.values[0]);
+            return std.mem.lessThan(u8, a.values[cell_name], b.values[cell_name]);
         }
     }.less);
 
@@ -514,7 +827,7 @@ pub fn generate(allocator: std.mem.Allocator, io: std.Io, book: *const Workbook,
     }
     for (sites.items) |site| {
         try out.append("<Placemark><name>");
-        try out.escaped(site.values[0]);
+        try out.escaped(site.values[cell_name]);
         try out.print("</name><styleUrl>#{s}</styleUrl><description>", .{if (site.speed < 3) "lowplacemarkStyle" else "placemarkStyle"});
         try description(&out, &site, mapping);
         try out.print("</description><Point><coordinates>{d},{d},0</coordinates></Point></Placemark>\n", .{ site.longitude, site.latitude });
@@ -524,24 +837,37 @@ pub fn generate(allocator: std.mem.Allocator, io: std.Io, book: *const Workbook,
             if (site.spectrum == candidate) band = candidate;
         }
         if (site.speed < 3) band = -1;
-        const radius = if (mapping.limit_range) limitedRange(site.spectrum) else site.range;
-        if (!std.math.isFinite(radius) or radius < 0 or radius > 1_000_000 or site.beamwidth < 0 or site.beamwidth > 360) return error.InvalidSectorGeometry;
+        // Spreadsheet errors (e.g. a range of 2e17 m) would draw a wedge
+        // around the planet. Fall back to the defaults for that cell instead
+        // of failing the whole export, and report how many were repaired.
+        var radius = if (mapping.limit_range) limitedRange(site.spectrum) else site.range;
+        var beamwidth = site.beamwidth;
+
+        if (!std.math.isFinite(radius) or radius <= 0 or radius > max_sector_range) {
+            radius = default_sector_range;
+            repaired += 1;
+        }
+
+        if (!std.math.isFinite(beamwidth) or beamwidth <= 0 or beamwidth > 360) {
+            beamwidth = default_beamwidth;
+            repaired += 1;
+        }
         try out.append("<Placemark><name>sec-");
-        try out.escaped(site.values[0]);
+        try out.escaped(site.values[cell_name]);
         try out.print("</name><styleUrl>#sector{d}</styleUrl><description>", .{band});
         try description(&out, &site, mapping);
         try out.append("</description><Polygon><extrude>1</extrude><altitudeMode>relativeToGround</altitudeMode><outerBoundaryIs><LinearRing><coordinates>");
         try out.print("{d},{d},0\n", .{ site.longitude, site.latitude });
         for (0..33) |step| {
-            const bearing = site.azimuth - site.beamwidth / 2 + site.beamwidth * @as(f64, @floatFromInt(step)) / 32;
+            const bearing = site.azimuth - beamwidth / 2 + beamwidth * @as(f64, @floatFromInt(step)) / 32;
             const point = destination(site.latitude, site.longitude, radius, bearing);
             try out.print("{d},{d},0\n", .{ point.longitude, point.latitude });
         }
         try out.print("{d},{d},0\n</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>\n", .{ site.longitude, site.latitude });
     }
     try out.append("</Document></kml>\n");
-    try out.save(io, mapping.output.slice());
-    return sites.items.len;
+    try out.save(io, output);
+    return .{ .sites = sites.items.len, .repaired = repaired };
 }
 
 fn description(out: *Document, site: *const Site, mapping: *const Mapping) !void {
@@ -580,18 +906,84 @@ fn destination(latitude: f64, longitude: f64, distance: f64, bearing: f64) struc
     return .{ .latitude = new_lat / radians, .longitude = new_lon / radians };
 }
 
-test "reference KML fixture aggregates 868 rows into 129 sites" {
+test "reference KML fixture maps like the original tool, one wedge per cell" {
     const path = std.c.getenv("ZIGZZZ_KML_FIXTURE") orelse return error.SkipZigTest;
     var book = try Workbook.load(std.testing.allocator, std.testing.io, std.mem.span(path));
     defer book.deinit();
     var mapping = Mapping.init(&book);
-    mapping.output.set("/tmp/zigzzz-test-output.kml");
-    defer std.Io.Dir.cwd().deleteFile(std.testing.io, mapping.output.slice()) catch {};
-    const count = try generate(std.testing.allocator, std.testing.io, &book, &mapping);
-    try std.testing.expectEqual(@as(usize, 129), count);
-    const xml = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, mapping.output.slice(), std.testing.allocator, .unlimited);
+
+    // Detected headers match WFAppKml's Form1.cs for KE-lt-99-perc-RNA.xlsx.
+    const expected = [_][2][]const u8{
+        .{ "SiteID", "cellname" },
+        .{ "CellID", "cellid" },
+        .{ "CI", "UNIQUE_ID" },
+        .{ "WCell", "period_start_time" },
+        .{ "SITE_NAME", "Physical_Site_Id" },
+        .{ "LAT", "LATITUDE" },
+        .{ "LONG", "LONGITUDE" },
+        .{ "Spectrum", "Spectrum" },
+        .{ "Bandwidth", "Bandwidth" },
+        .{ "Sector_AZ", "Sec-Azmuth" },
+        .{ "Sector_Range", "Sec-Range" },
+        .{ "Sector_HBW", "BW" },
+        .{ "Sector_ABH", "ABH" },
+        .{ "Sector_MTilt", "M Tilt" },
+        .{ "Sector_ETilt", "E Tilt" },
+        .{ "Sector_dlRsBoost", "dlRsBoost" },
+        .{ "Sector_PMax", "PMax(W)" },
+        .{ "Speed", "DL_User_throughput" },
+        .{ "Volume", "Total_Data_Volume" },
+        .{ "Availability", "rna_4g" },
+        .{ "Drop", "PS_Drop_Call_Rate" },
+        .{ "xTxR", "MIMO_CONFIG" },
+        .{ "Configuration", "MIMO_CONFIG" },
+        .{ "FOE", "FOE" },
+        .{ "TAC", "County" },
+        .{ "Clutter", "Town" },
+        .{ "ENodeBId", "siteid" },
+        .{ "Site_Prefence", "Site_Prefence" },
+        .{ "REGION", "ZONE" },
+        .{ "Carrier_Count", "Carriers" },
+        .{ "Macro_IBS", "Macro_IBS" },
+        .{ "ONAIR_DATE", "IOE_STATUS" },
+        .{ "SITE_STATUS", "SITE_STATUS" },
+        .{ "VENDOR", "VENDOR" },
+    };
+
+    for (expected) |pair| {
+        const index = for (fields, 0..) |field, at| {
+            if (std.mem.eql(u8, field.key, pair[0])) break at;
+        } else unreachable;
+
+        const column = mapping.columns[index] orelse return error.FieldNotDetected;
+        try std.testing.expectEqualStrings(pair[1], book.cell(0, column));
+    }
+
+    // The traffic-distribution columns are not in this export.
+    try std.testing.expect(mapping.columns[fieldIndex("Sector_R1")] == null);
+
+    mapping.folder.set("/tmp/");
+    mapping.filename.set("zigzzz-test-output");
+
+    var path_buffer: [1024]u8 = undefined;
+    const output = mapping.outputPath(&path_buffer);
+    try std.testing.expectEqualStrings("/tmp/zigzzz-test-output.kml", output);
+
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, output) catch {};
+    const summary = try generate(std.testing.allocator, std.testing.io, &book, &mapping);
+
+    // Every row is a distinct cell: a point and a sector wedge each.
+    try std.testing.expectEqual(@as(usize, 868), summary.sites);
+
+    // KEEKOROK_LODGE_L8_C has a sector range of 2.1e17 m in the export.
+    try std.testing.expectEqual(@as(usize, 1), summary.repaired);
+
+    const xml = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, output, std.testing.allocator, .unlimited);
     defer std.testing.allocator.free(xml);
-    try std.testing.expectEqual(@as(usize, 258), std.mem.count(u8, xml, "<Placemark>"));
-    try std.testing.expectEqual(@as(usize, 129), std.mem.count(u8, xml, "<Polygon>"));
+
+    try std.testing.expectEqual(@as(usize, 1736), std.mem.count(u8, xml, "<Placemark>"));
+    try std.testing.expectEqual(@as(usize, 868), std.mem.count(u8, xml, "<Polygon>"));
+    try std.testing.expect(std.mem.indexOf(u8, xml, "<name>ABOKE_UWAI_1</name>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, xml, "SITE_NAME:  SYA0057") != null);
     try std.testing.expect(std.mem.endsWith(u8, xml, "</Document></kml>\n"));
 }

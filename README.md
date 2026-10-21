@@ -19,8 +19,26 @@ zig build run
 optimized `zig-out/bin/zigzzz-safe` with runtime safety checks; chart image
 exports are much faster in optimized builds.
 
-The build targets the current host. The release names are `zigzzz` (debug),
-`zigzzz-small`, `zigzzz-fast`, and `zigzzz-safe`, selected with `-Doptimize`.
+The build targets the current host unless `-Dtarget` is given. The release names
+are `zigzzz` (debug), `zigzzz-small`, `zigzzz-fast`, and `zigzzz-safe`, selected
+with `-Doptimize`.
+
+`packaging/package.sh` builds the release-fast binaries for Windows and Fedora
+on x86-64 and ARM64, then writes the downloadable archives and `SHA256SUMS` to
+`dist/release`:
+
+| Archive | Platform |
+| --- | --- |
+| `zigzzz-<version>-windows-x86_64.zip` | Windows 10/11, Intel/AMD |
+| `zigzzz-<version>-windows-aarch64.zip` | Windows 11 on ARM |
+| `zigzzz-<version>-linux-x86_64.tar.gz` | Fedora/glibc 2.31+, Intel/AMD |
+| `zigzzz-<version>-linux-aarch64.tar.gz` | Fedora/glibc 2.31+, ARM64 |
+| `zigzzz-<version>-src.tar.gz` | Source tree |
+| `zigzzz-<version>-src.zip` | Source tree |
+
+The binaries are self-contained apart from the OS C runtime; SDL3, SDL_image,
+FreeType, and Expat are statically linked. Pass `--skip-build` to repackage
+existing binaries.
 
 `zig build size` reports those release binaries from the fixed
 `zig-out/windows/bin` and `zig-out/bin` directories. It does not build missing
@@ -58,6 +76,11 @@ The native FreeType/Expat headers use Zig's built-in `addTranslateC`.
   XLS, XLSB, and ODS files as XLSX first.
   - The sidebar lists areas (with failing counts) and KPI groups. The area name
     in the top bar is also a switcher.
+  - KPIs start in default groups — Availability, Drops, Mobility,
+    Accessibility, Throughput, Utilization, Radio quality, Traffic, and Data
+    integrity — matched by name. KPIs first seen in a report join them too.
+    Edit or delete groups in Settings; a deleted default group only returns
+    if a newly seen KPI matches it.
   - Filter by status with the pills, and pick the date range with the
     segmented control. Area and KPI overrides from Settings still apply.
   - Charts replicate ldd's Chart.js cards: nice y ticks, daily x ticks up to 31
@@ -69,9 +92,19 @@ The native FreeType/Expat headers use Zig's built-in `addTranslateC`.
   - **Export** writes editable Excel charts, or PNG images of failing charts,
     beside the report. Exports cover every area with the current filters.
     Images always use the light palette.
-- **KML Generator** accepts XLSX workbooks, detects column mappings, supports
-  extra description columns, and exports site points and optional sector
-  polygons. Rows are aggregated using the mapped cell name.
+- **KML Generator** accepts XLSX workbooks and exports site points and optional
+  sector polygons. Rows are aggregated using the mapped cell name.
+  - Every field is listed under **Columns**. Picking a column remembers that
+    header for every workbook you open later (marked with a teal dot);
+    **Reset to auto-detect** forgets those choices. Unremembered fields are
+    detected from aliases in each workbook.
+  - The column picker lists every column with a sample value. Its search is a
+    case-insensitive regular expression (`lat|lon`, `^sec.?r`, `\bci\b`),
+    ranked by how closely each header matches; the matched part is
+    highlighted and **Enter** picks the top result.
+  - Description columns, the sector switches, and the output folder are
+    remembered too. Type a folder or use **Browse**, set the file name, and
+    turn on **Use this folder by default** to export there for new workbooks.
 - **Settings** has five tabs. Changes are staged; a bar appears with **Save
   changes** and **Discard** while anything differs. **Restore defaults** stages
   the defaults for review. The sidebar footer toggles light and dark mode

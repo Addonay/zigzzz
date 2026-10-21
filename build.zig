@@ -5,7 +5,7 @@ const manifest = @import("build.zig.zon");
 const dependency_optimize: std.builtin.Optimize = .fast;
 
 pub fn build(b: *std.Build) void {
-    const target = b.graph.host;
+    const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
     const packages = @import("root").dependencies.packages;
@@ -65,6 +65,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .link_libc = true,
+        .strip = true,
     });
     module.addImport("sdl3", sdl);
     module.addImport("zlay", zlay);
@@ -73,7 +74,19 @@ pub fn build(b: *std.Build) void {
     module.linkLibrary(ft_lib);
     module.linkLibrary(expat_lib);
 
+    const build_options = b.addOptions();
+    build_options.addOption([:0]const u8, "version", manifest.version);
+    module.addOptions("build_options", build_options);
+
+    const windows = target.result.os.tag == .windows;
+
+    // Icon and version details for Explorer and the taskbar.
+    if (windows) module.addWin32ResourceFile(.{ .file = b.path("packaging/windows/zigzzz.rc") });
+
     const exe = b.addExecutable(.{ .name = name, .root_module = module });
+
+    // A GUI app: no console window behind it on Windows.
+    if (windows) exe.subsystem = .windows;
     b.installArtifact(exe);
     const run = b.addRunArtifact(exe);
     b.step("run", "Run the workspace").dependOn(&run.step);

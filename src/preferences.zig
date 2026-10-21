@@ -1,9 +1,39 @@
 const std = @import("std");
 const assets = @import("assets");
+const regex = @import("regex.zig");
 pub const Text = @import("text.zig").Text;
 
 pub const operators = [_][]const u8{ ">=", "<=", ">", "<", "==", "!=" };
 pub const max_kpis = 512;
+pub const max_kml_columns = 64;
+pub const max_kml_extras = 16;
+
+/// Built-in KPI groups. A KPI joins the first group whose pattern matches
+/// its name (case-insensitive); groups are created only once they have a KPI.
+pub const default_groups = [_]struct { name: []const u8, pattern: []const u8 }{
+    .{ .name = "Availability", .pattern = "rna|availab" },
+    .{ .name = "Drops", .pattern = "drop|dcr" },
+    .{ .name = "Mobility", .pattern = "^ho\\b|handover|srvcc|csfb" },
+    .{ .name = "Accessibility", .pattern = "cssr|setup|attach|\\brrc\\b|paging|\\bpsr\\b|success|addition" },
+    .{ .name = "Throughput", .pattern = "throughput" },
+    .{ .name = "Utilization", .pattern = "utili|blocking" },
+    .{ .name = "Radio quality", .pattern = "cqi|qual|latency|packet loss" },
+    .{ .name = "Traffic", .pattern = "traffic|volume" },
+    .{ .name = "Data integrity", .pattern = "integrity" },
+    .{ .name = "Sites & cells", .pattern = "\\bsites?$|\\bcells$" },
+};
+
+/// A remembered KML column choice: the field key and the header it maps
+/// to. An empty header means the field was deliberately left unmapped.
+pub const KmlColumn = struct {
+    key: Text = .{},
+    header: Text = .{},
+};
+
+pub const KmlExtra = struct {
+    label: Text = .{},
+    header: Text = .{},
+};
 
 pub const Rule = struct {
     name: Text = .{},
@@ -39,7 +69,9 @@ const Raw = struct {
     thresholds: []const RawRule = &.{},
     kpi_names: []const []const u8 = &.{},
     groups: []const RawGroup = &.{},
+    groups_seeded: bool = false,
     overlays: std.json.Value = .null,
+    kml: std.json.Value = .null,
 };
 
 pub const Preferences = struct {
@@ -57,6 +89,16 @@ pub const Preferences = struct {
     kpi_count: usize = 0,
     overlays: [32]Overlay = undefined,
     overlay_count: usize = 0,
+    groups_seeded: bool = false,
+
+    // KML generation defaults, remembered from the KML page.
+    kml_columns: [max_kml_columns]KmlColumn = undefined,
+    kml_column_count: usize = 0,
+    kml_extras: [max_kml_extras]KmlExtra = undefined,
+    kml_extra_count: usize = 0,
+    kml_folder: Text = .{},
+    kml_sectors: bool = true,
+    kml_limit_range: bool = false,
 
     pub fn defaults(result: *Preferences, allocator: std.mem.Allocator) !void {
         result.* = .{};
@@ -64,6 +106,73 @@ pub const Preferences = struct {
         defer parsed.deinit();
 
         for (parsed.value) |rule| try result.includeRule(rule.name, rule.operator, rule.value);
+        result.seedGroups();
+    }
+
+    // ── Default groups ─────────────────────────────────────────────────
+
+    /// Put every ungrouped KPI into its default group, once per settings
+    /// file. Groups the user deletes afterwards stay deleted.
+    pub fn seedGroups(self: *Preferences) void {
+        for (0..self.rule_count) |index| self.groupByDefault(index);
+        self.groups_seeded = true;
+    }
+
+    /// Add one ungrouped KPI to the first default group whose pattern
+    /// matches its name, creating that group if needed.
+    pub fn groupByDefault(self: *Preferences, index: usize) void {
+        if (index >= self.rule_count) return;
+
+        for (self.groups[0..self.group_count]) |*group| {
+            if (group.members[index]) return;
+        }
+
+        const name = self.rules[index].name.slice();
+
+        for (default_groups) |candidate| {
+            const pattern = regex.Regex.compile(candidate.pattern) catch continue;
+            if (!pattern.matches(name)) continue;
+
+            for (self.groups[0..self.group_count]) |*group| {
+                if (std.mem.eql(u8, group.name.slice(), candidate.name)) {
+                    group.members[index] = true;
+                    return;
+                }
+            }
+
+            if (self.group_count == self.groups.len) return;
+
+            self.groups[self.group_count] = .{ .name = .init(candidate.name) };
+            self.groups[self.group_count].members[index] = true;
+            self.group_count += 1;
+            return;
+        }
+    }
+
+    // ── KML defaults ───────────────────────────────────────────────────
+
+    /// The remembered header for a KML field: null when nothing is
+    /// remembered, "" when the field was deliberately left unmapped.
+    pub fn kmlColumn(self: *const Preferences, key: []const u8) ?[]const u8 {
+        for (self.kml_columns[0..self.kml_column_count]) |*column| {
+            if (std.mem.eql(u8, column.key.slice(), key)) return column.header.slice();
+        }
+
+        return null;
+    }
+
+    pub fn setKmlColumn(self: *Preferences, key: []const u8, header: []const u8) void {
+        for (self.kml_columns[0..self.kml_column_count]) |*column| {
+            if (std.mem.eql(u8, column.key.slice(), key)) {
+                column.header.set(header);
+                return;
+            }
+        }
+
+        if (self.kml_column_count == self.kml_columns.len) return;
+
+        self.kml_columns[self.kml_column_count] = .{ .key = .init(key), .header = .init(header) };
+        self.kml_column_count += 1;
     }
 
     pub fn find(self: *const Preferences, name: []const u8) ?usize {
@@ -123,6 +232,19 @@ pub const Preferences = struct {
         for (self.overlays[0..self.overlay_count], other.overlays[0..other.overlay_count]) |*a, *b| {
             if (a.primary != b.primary) return false;
             if (!std.mem.eql(bool, a.members[0..self.rule_count], b.members[0..self.rule_count])) return false;
+        }
+
+        if (self.groups_seeded != other.groups_seeded) return false;
+        if (self.kml_sectors != other.kml_sectors or self.kml_limit_range != other.kml_limit_range) return false;
+        if (!same(&self.kml_folder, &other.kml_folder)) return false;
+        if (self.kml_column_count != other.kml_column_count or self.kml_extra_count != other.kml_extra_count) return false;
+
+        for (self.kml_columns[0..self.kml_column_count], other.kml_columns[0..other.kml_column_count]) |*a, *b| {
+            if (!same(&a.key, &b.key) or !same(&a.header, &b.header)) return false;
+        }
+
+        for (self.kml_extras[0..self.kml_extra_count], other.kml_extras[0..other.kml_extra_count]) |*a, *b| {
+            if (!same(&a.label, &b.label) or !same(&a.header, &b.header)) return false;
         }
 
         return true;
@@ -259,7 +381,87 @@ pub const Preferences = struct {
             }
         }
 
+        if (parsed.value.kml == .object) try result.loadKml(parsed.value.kml.object);
+
+        // Settings written before default groups existed get them once.
+        if (parsed.value.groups_seeded) result.groups_seeded = true else result.seedGroups();
+
         try result.validate();
+    }
+
+    fn loadKml(self: *Preferences, object: std.json.ObjectMap) !void {
+        if (object.get("columns")) |columns| {
+            if (columns != .object) return error.InvalidSettings;
+
+            var iterator = columns.object.iterator();
+
+            while (iterator.next()) |item| {
+                const header = switch (item.value_ptr.*) {
+                    .string => |value| value,
+                    .null => "",
+                    else => return error.InvalidSettings,
+                };
+
+                self.setKmlColumn(item.key_ptr.*, header);
+            }
+        }
+
+        if (object.get("extras")) |extras| {
+            if (extras != .array) return error.InvalidSettings;
+
+            for (extras.array.items) |item| {
+                if (item != .object or self.kml_extra_count == self.kml_extras.len) return error.InvalidSettings;
+
+                const label = item.object.get("label") orelse return error.InvalidSettings;
+                const header = item.object.get("header") orelse return error.InvalidSettings;
+                if (label != .string or header != .string) return error.InvalidSettings;
+
+                self.kml_extras[self.kml_extra_count] = .{ .label = .init(label.string), .header = .init(header.string) };
+                self.kml_extra_count += 1;
+            }
+        }
+
+        if (object.get("folder")) |folder| {
+            if (folder != .string) return error.InvalidSettings;
+            self.kml_folder.set(folder.string);
+        }
+
+        if (object.get("sectors")) |value| {
+            if (value != .bool) return error.InvalidSettings;
+            self.kml_sectors = value.bool;
+        }
+
+        if (object.get("limit_range")) |value| {
+            if (value != .bool) return error.InvalidSettings;
+            self.kml_limit_range = value.bool;
+        }
+    }
+
+    fn kmlJson(self: *const Preferences, memory: std.mem.Allocator) !std.json.Value {
+        var columns: std.json.ObjectMap = .empty;
+
+        for (self.kml_columns[0..self.kml_column_count]) |*column| {
+            const header = column.header.slice();
+            try columns.put(memory, column.key.slice(), if (header.len == 0) .null else .{ .string = header });
+        }
+
+        var extras = std.json.Array.init(memory);
+
+        for (self.kml_extras[0..self.kml_extra_count]) |*extra| {
+            var item: std.json.ObjectMap = .empty;
+            try item.put(memory, "label", .{ .string = extra.label.slice() });
+            try item.put(memory, "header", .{ .string = extra.header.slice() });
+            try extras.append(.{ .object = item });
+        }
+
+        var result: std.json.ObjectMap = .empty;
+        try result.put(memory, "columns", .{ .object = columns });
+        try result.put(memory, "extras", .{ .array = extras });
+        try result.put(memory, "folder", .{ .string = self.kml_folder.slice() });
+        try result.put(memory, "sectors", .{ .bool = self.kml_sectors });
+        try result.put(memory, "limit_range", .{ .bool = self.kml_limit_range });
+
+        return .{ .object = result };
     }
 
     pub fn save(self: *const Preferences, allocator: std.mem.Allocator, io: std.Io, path: []const u8) !void {
@@ -309,9 +511,11 @@ pub const Preferences = struct {
             .thresholds = rules.items,
             .kpi_names = names.items,
             .groups = groups.items,
+            .groups_seeded = self.groups_seeded,
             .area_days = .{ .object = area_map },
             .kpi_days = .{ .object = kpi_map },
             .overlays = .{ .object = overlay_map },
+            .kml = try self.kmlJson(memory),
         }, .{ .whitespace = .indent_2 });
 
         if (std.fs.path.dirname(path)) |directory| try std.Io.Dir.cwd().createDirPath(io, directory);
@@ -376,4 +580,86 @@ test "settings survive an atomic round trip" {
     try std.testing.expectEqual(@as(usize, 1), loaded.group_count);
     try std.testing.expect(loaded.groups[0].members[0]);
     try std.testing.expect(loaded.overlays[0].members[1]);
+}
+
+test "default groups use short names and stay seeded" {
+    const allocator = std.testing.allocator;
+    const p = try allocator.create(Preferences);
+    defer allocator.destroy(p);
+    try p.defaults(allocator);
+
+    const expectations = [_][2][]const u8{
+        .{ "2G RNA", "Availability" },
+        .{ "5G Session Drop Rate", "Drops" },
+        .{ "SRVCC Success Rate (3G & 2G)", "Mobility" },
+        .{ "3G CSSR", "Accessibility" },
+        .{ "4G Throughput(DL_User_throughput) (Mbps)", "Throughput" },
+        .{ "2G_TCH_Blocking", "Utilization" },
+        .{ "4G CQI", "Radio quality" },
+        .{ "4G Data integrity(%)", "Data integrity" },
+    };
+
+    for (expectations) |expectation| {
+        const index = p.find(expectation[0]).?;
+        var found = false;
+
+        for (p.groups[0..p.group_count]) |*group| {
+            if (group.members[index]) {
+                try std.testing.expectEqualStrings(expectation[1], group.name.slice());
+                found = true;
+            }
+        }
+
+        try std.testing.expect(found);
+    }
+
+    // A KPI seen later in a report joins its group, creating it if needed.
+    const traffic = try p.include("Data Traffic (TB)");
+    p.groupByDefault(traffic);
+    try std.testing.expectEqualStrings("Traffic", p.groups[p.group_count - 1].name.slice());
+
+    // Network inventory rows from real reports.
+    for ([_][]const u8{ "2G Sites", "Total Physical Sites", "4G Cells" }) |name| {
+        const index = try p.include(name);
+        p.groupByDefault(index);
+        try std.testing.expectEqualStrings("Sites & cells", p.groups[p.group_count - 1].name.slice());
+        try std.testing.expect(p.groups[p.group_count - 1].members[index]);
+    }
+
+    // "No. of cells having 4G user throughput <3Mbps" is a throughput KPI.
+    const slow_cells = try p.include("No. of cells having 4G user throughput <3Mbps");
+    p.groupByDefault(slow_cells);
+    try std.testing.expect(!p.groups[p.group_count - 1].members[slow_cells]);
+
+    try p.validate();
+}
+
+test "KML defaults survive a round trip" {
+    const allocator = std.testing.allocator;
+    const p = try allocator.create(Preferences);
+    defer allocator.destroy(p);
+    try p.defaults(allocator);
+
+    p.setKmlColumn("LAT", "Lat_Deg");
+    p.setKmlColumn("Speed", "");
+    p.kml_extras[0] = .{ .label = .init("Owner"), .header = .init("owner_name") };
+    p.kml_extra_count = 1;
+    p.kml_folder.set("/srv/maps");
+    p.kml_limit_range = true;
+
+    const path = "/tmp/zigzzz-test-kml-settings.json";
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, path) catch {};
+    try p.save(allocator, std.testing.io, path);
+
+    const loaded = try allocator.create(Preferences);
+    defer allocator.destroy(loaded);
+    try loaded.load(allocator, std.testing.io, path);
+
+    try std.testing.expectEqualStrings("Lat_Deg", loaded.kmlColumn("LAT").?);
+    try std.testing.expectEqualStrings("", loaded.kmlColumn("Speed").?);
+    try std.testing.expect(loaded.kmlColumn("LONG") == null);
+    try std.testing.expectEqualStrings("owner_name", loaded.kml_extras[0].header.slice());
+    try std.testing.expectEqualStrings("/srv/maps", loaded.kml_folder.slice());
+    try std.testing.expect(loaded.kml_limit_range);
+    try std.testing.expect(loaded.equivalent(p));
 }

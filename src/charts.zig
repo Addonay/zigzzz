@@ -219,11 +219,13 @@ pub fn sidebar(app: *App, context: Rect) void {
     const p = app.palette();
     const data = &app.report.?;
 
-    const previous = r.clipWithin(context);
-    defer r.restoreClip(previous);
-
-    var y = context.y + 10;
     r.hline(context.x, context.right(), context.y, p.sidebar_border);
+
+    // Areas and groups scroll; "Open another report" stays pinned below.
+    const list = Rect{ .x = context.x, .y = context.y + 1, .w = context.w, .h = context.h - 46 };
+    const previous = r.clipWithin(list);
+
+    var y = list.y + 9 - app.sidebar_scroll;
 
     app.sectionLabel("Areas", context.x + 10, y + 4);
     y += 28;
@@ -262,7 +264,14 @@ pub fn sidebar(app: *App, context: Rect) void {
 
         for (app.saved.groups[0..app.saved.group_count], 0..) |*group, index| {
             var count_buffer: [16]u8 = undefined;
-            const members = std.mem.count(bool, &group.members, &.{true});
+            // Count only KPIs this area reports, so the badge matches the
+            // cards shown when the group is selected.
+            var members: usize = 0;
+
+            for (group.members[0..app.saved.rule_count], 0..) |selected, rule| {
+                if (selected and data.has(app.area, app.saved.rules[rule].name.slice())) members += 1;
+            }
+
             const badge = App.Badge{
                 .text = std.fmt.bufPrint(&count_buffer, "{d}", .{members}) catch "",
                 .foreground = p.muted_foreground,
@@ -280,7 +289,16 @@ pub fn sidebar(app: *App, context: Rect) void {
         }
     }
 
-    const new_file = Rect{ .x = context.x, .y = @max(y + 12, context.bottom() - 38), .w = context.w, .h = 32 };
+    app.sidebar_list = list;
+    app.sidebar_scroll_max = @max(0, y + 8 + app.sidebar_scroll - list.bottom());
+    app.sidebar_scroll = @min(app.sidebar_scroll, app.sidebar_scroll_max);
+
+    r.restoreClip(previous);
+    app.ui.scrollbar(.{ .x = list.x, .y = list.y, .w = list.w + 9, .h = list.h }, app.sidebar_scroll, app.sidebar_scroll_max);
+
+    if (app.sidebar_scroll_max > 0) r.hline(context.x, context.right(), list.bottom(), p.sidebar_border);
+
+    const new_file = Rect{ .x = context.x, .y = context.bottom() - 38, .w = context.w, .h = 32 };
 
     if (app.navItem(new_file, .rotate, "Open another report", false, null)) app.closeReport();
 }
@@ -312,7 +330,7 @@ pub fn topbar(app: *App, area: Rect) void {
     r.icon(.chevron_down, .{ .x = name_x + r.textWidth(name, .heading) + 6, .y = area.centerY() - 7, .w = 14, .h = 14 }, p.muted_foreground);
 
     var buffer: [256]u8 = undefined;
-    const source = std.fmt.bufPrint(&buffer, "{s}  ·  {d} KPIs", .{ data.source, data.names.len }) catch data.source;
+    const source = std.fmt.bufPrint(&buffer, "{s}  ·  {d} KPIs", .{ data.source, data.areas[app.area].series.len }) catch data.source;
     const source_x = switcher.right() + 8;
 
     // Right: actions.
@@ -457,6 +475,9 @@ fn collect(app: *const App, output: *[prefs.max_kpis]usize, group: ?usize) usize
     var length: usize = 0;
 
     for (data.names, 0..) |name, index| {
+        // Areas don't all report the same KPIs.
+        if (!data.has(app.area, name)) continue;
+
         const status = statusOf(app, name);
 
         if (app.status_filter > 0 and 1 + @backingInt(status) != app.status_filter) continue;
@@ -517,8 +538,14 @@ fn filterRow(app: *App, x: f32, y: f32, width: f32) f32 {
     const ui = &app.ui;
     const data = &app.report.?;
 
-    var counts = [_]usize{ data.names.len, 0, 0, 0 };
-    for (data.names) |name| counts[1 + @backingInt(statusOf(app, name))] += 1;
+    var counts = [_]usize{ 0, 0, 0, 0 };
+
+    for (data.names) |name| {
+        if (!data.has(app.area, name)) continue;
+
+        counts[0] += 1;
+        counts[1 + @backingInt(statusOf(app, name))] += 1;
+    }
 
     const labels = [_][]const u8{ "All", "Passing", "Failing", "No threshold" };
     const icons = [_]?gfx.Icon{ null, .circle_check, .circle_x, .circle_help };

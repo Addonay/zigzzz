@@ -404,7 +404,7 @@ const Parser = struct {
             'B' => return self.node(.not_boundary),
 
             'd', 'w', 's', 'D', 'W', 'S' => {
-                var class = Class.initEmpty();
+                var class = Class.empty;
                 addShorthand(&class, std.ascii.toLower(next));
 
                 if (std.ascii.isUpper(next)) class.toggleAll();
@@ -418,7 +418,7 @@ const Parser = struct {
     }
 
     fn bracket(self: *Parser) !u16 {
-        var class = Class.initEmpty();
+        var class = Class.empty;
         var negate = false;
 
         if (self.peek() == '^') {
@@ -441,7 +441,7 @@ const Parser = struct {
                 self.at += 1;
 
                 if (std.mem.indexOfScalar(u8, "dwsDWS", escaped) != null) {
-                    var shorthand = Class.initEmpty();
+                    var shorthand = Class.empty;
                     addShorthand(&shorthand, std.ascii.toLower(escaped));
                     if (std.ascii.isUpper(escaped)) shorthand.toggleAll();
 
@@ -518,7 +518,7 @@ pub const Query = struct {
         if (self.text.len == 0) return .{ .start = 0, .end = 0 };
         if (self.regex) |*regex| return regex.find(label);
 
-        const start = std.ascii.indexOfIgnoreCase(label, self.text) orelse return null;
+        const start = std.ascii.findIgnoreCase(label, self.text) orelse return null;
         return .{ .start = start, .end = start + self.text.len };
     }
 

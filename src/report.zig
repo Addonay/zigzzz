@@ -50,7 +50,7 @@ pub const Report = struct {
 
             if (expecting_area) {
                 for (0..book.column_count) |column| {
-                    const candidate = book.cell(row, column);
+                    const candidate = std.mem.trim(u8, book.cell(row, column), " \t\r\n");
                     if (candidate.len > 0 and number(candidate) == null) {
                         name = try memory.dupe(u8, candidate);
                         break;
@@ -59,7 +59,9 @@ pub const Report = struct {
                 expecting_area = false;
             }
 
-            const kpi = book.cell(row, 1);
+            // Reports pad some names ("2G Utilization "); trim them so
+            // thresholds and groups match.
+            const kpi = std.mem.trim(u8, book.cell(row, 1), " \t\r\n");
             if (kpi.len == 0) continue;
             var samples: std.ArrayList(Point) = .empty;
 
@@ -85,14 +87,25 @@ pub const Report = struct {
             for (areas.items[0..index]) |previous| if (std.mem.eql(u8, previous.name, area.name)) return error.DuplicateAreaName;
         }
 
-        const names = try memory.alloc([]const u8, areas.items[0].series.len);
-        for (areas.items[0].series, names) |item, *output| output.* = item.name;
+        // Every KPI from every area, in first-seen order. Areas need not
+        // share one list: later blocks often add rows such as "2G Sites".
+        var names: std.ArrayList([]const u8) = .empty;
+
+        for (areas.items) |area| {
+            next: for (area.series) |item| {
+                for (names.items) |existing| {
+                    if (std.mem.eql(u8, existing, item.name)) continue :next;
+                }
+
+                try names.append(memory, item.name);
+            }
+        }
 
         return .{
             .arena = arena,
             .source = try memory.dupe(u8, std.fs.path.basename(book.path)),
             .areas = try areas.toOwnedSlice(memory),
-            .names = names,
+            .names = try names.toOwnedSlice(memory),
         };
     }
 
@@ -100,6 +113,11 @@ pub const Report = struct {
         if (area >= self.areas.len) return null;
         for (self.areas[area].series) |*series| if (std.mem.eql(u8, series.name, name)) return series;
         return null;
+    }
+
+    /// Whether `area` reports `name` at all.
+    pub fn has(self: *const Report, area: usize, name: []const u8) bool {
+        return self.find(area, name) != null;
     }
 
     pub fn status(self: *const Report, area: usize, name: []const u8, preferences: *const Preferences) Status {
@@ -206,4 +224,32 @@ test "reference QoS fixture preserves all areas and samples" {
     }
     try std.testing.expectEqual(@as(usize, 23760), points);
     try std.testing.expectEqualStrings("Kenya", data.areas[0].name);
+}
+
+test "real report lists every area's KPIs with trimmed names" {
+    const path = std.c.getenv("ZIGZZZ_QOS_REAL_FIXTURE") orelse return error.SkipZigTest;
+    var book = try Workbook.load(std.testing.allocator, std.testing.io, std.mem.span(path));
+    defer book.deinit();
+    var data = try Report.parse(std.testing.allocator, &book);
+    defer data.deinit();
+
+    // Every KPI of every area is in the shared list, so no area loses
+    // KPIs that the first area doesn't report.
+    for (data.areas, 0..) |area, index| {
+        for (area.series) |series| {
+            var listed = false;
+            for (data.names) |name| listed = listed or std.mem.eql(u8, name, series.name);
+
+            try std.testing.expect(listed);
+            try std.testing.expect(data.has(index, series.name));
+        }
+    }
+
+    for (data.names) |name| {
+        try std.testing.expectEqualStrings(std.mem.trim(u8, name, " \t\r\n"), name);
+    }
+
+    var has_sites = false;
+    for (data.names) |name| has_sites = has_sites or std.mem.eql(u8, name, "2G Sites");
+    try std.testing.expect(has_sites);
 }

@@ -5,6 +5,9 @@ pub const mono = @embedFile("mono.ttf");
 pub const mono_bold = @embedFile("mono-bold.ttf");
 pub const thresholds = @embedFile("default_thresholds.json");
 
+/// 256 px window icon, generated from another-logo.webp (see packaging/).
+pub const app_icon = @embedFile("app-icon.png");
+
 /// SVG sources in the same order as `render.Icon`; SDL_image rasterizes them at startup.
 pub const icons = [_][]const u8{
     @embedFile("icons/house.svg"),
