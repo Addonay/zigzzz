@@ -33,6 +33,13 @@ git push origin v0.1.1
 
 GitHub Actions builds every package and publishes the release.
 
+CI and releases cache Zig build artifacts and fetched packages. Release builds
+also cache AppImage packaging tools. Cache keys include the runner platform,
+Zig version, dependency manifest, and commit; compatible older caches seed new
+builds, while Zig checks which outputs need rebuilding. A manual Release workflow
+run on `main` warms the full multi-target cache for later tags without publishing
+a release. The first run after a cache reset still needs a cold build.
+
 ## Settings
 
 On Windows, settings are stored in `%APPDATA%\zigzzz\settings.json`. The native

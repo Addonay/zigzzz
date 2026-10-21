@@ -12,6 +12,9 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-cache
+      ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/.zig-cache
 
     steps:
       - uses: actions/checkout@v4
@@ -19,6 +22,24 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.0
+          # Keep the compiler path stable between runners: C cache keys also
+          # contain compiler/header paths. Manage build caches below so CI
+          # and release jobs can share them instead of using per-job keys.
+          use-tool-cache: true
+          use-cache: false
+
+      - name: Restore Zig build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .zig-cache
+            zig-pkg
+          key: zig-v1-${{ runner.os }}-${{ runner.arch }}-0.17.0-ci-${{ hashFiles('build.zig.zon') }}-${{ github.sha }}
+          restore-keys: |
+            zig-v1-${{ runner.os }}-${{ runner.arch }}-0.17.0-ci-${{ hashFiles('build.zig.zon') }}-
+            zig-v1-${{ runner.os }}-${{ runner.arch }}-0.17.0-release-${{ hashFiles('build.zig.zon') }}-
+            zig-v1-${{ runner.os }}-${{ runner.arch }}-0.17.0-release-
+            zig-v1-${{ runner.os }}-${{ runner.arch }}-0.17.0-ci-
 
       - name: Test
         run: zig build test
