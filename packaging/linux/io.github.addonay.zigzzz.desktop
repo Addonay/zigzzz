@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Workspace
+GenericName=QoS KPI and KML workspace
+Comment=Chart QoS KPIs against thresholds and turn site workbooks into KML
+Exec=zigzzz
+Icon=io.github.addonay.zigzzz
+Terminal=false
+Categories=Office;Spreadsheet;
+Keywords=QoS;KPI;KML;charts;spreadsheet;xlsx;
+StartupWMClass=io.github.addonay.zigzzz

@@ -127,7 +127,36 @@ ZIGZZZ_KML_FIXTURE=/path/to/KE-lt-99-perc-RNA.xlsx zig build test
 
 Fixture checks are optional; ordinary tests cover dates, UTF-8 editing,
 threshold comparisons, preference persistence, and PNG encoding. Test code is
-separate from the executable.
+separate from the executable. `ZIGZZZ_QOS_REAL_FIXTURE` adds a check against
+a real multi-area report.
+
+## Releases
+
+GitHub Actions builds and publishes every release. To cut one, bump `.version`
+in `build.zig.zon`, commit, and push a matching tag:
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The **Release** workflow checks the tag against `build.zig.zon`, runs the tests,
+and attaches these files to the GitHub Release:
+
+| File | Platform |
+|---|---|
+| `zigzzz-<version>-1.x86_64.rpm`, `-1.aarch64.rpm` | Fedora and other RPM distributions |
+| `zigzzz-<version>-x86_64.AppImage`, `-aarch64.AppImage` | Any Linux with glibc 2.31+ |
+| `zigzzz-<version>-windows-x86_64.exe`, `-aarch64.exe` | Windows 10/11 (portable) |
+| `zigzzz-<version>-src.tar.gz`, `-src.zip` | Source |
+| `SHA256SUMS` | Checksums |
+
+Running the workflow by hand from the Actions tab is a dry run: the packages are
+attached to the run as an artifact and nothing is released. **CI** builds and
+tests every push and pull request to `main`.
+
+`./packaging/package.sh` produces the same files locally in `dist/release/`;
+it needs `rpmbuild`, `zip`, and `curl`.
 
 ## Assets
 
