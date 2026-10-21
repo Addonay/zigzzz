@@ -42,7 +42,9 @@ jobs:
             zig-v1-${{ runner.os }}-${{ runner.arch }}-0.17.0-ci-
 
       - name: Test
-        run: zig build test
+        # A native CPU target can differ between GitHub-hosted machines and
+        # invalidate cached C objects. Match the released Linux target.
+        run: zig build test -Dtarget=x86_64-linux-gnu.2.31 --summary all
 
       - name: Build
-        run: zig build -Doptimize=fast
+        run: zig build -Dtarget=x86_64-linux-gnu.2.31 -Doptimize=fast --summary all
