@@ -19,6 +19,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Cache Zig installation
+        uses: actions/cache@v4
+        with:
+          # Preserve the installed compiler and header timestamps, not just
+          # the download tarball which setup-zig extracts afresh otherwise.
+          path: ${{ runner.tool_cache }}/zig/0.17.0
+          key: zig-install-v1-${{ runner.os }}-${{ runner.arch }}-0.17.0
+
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.0

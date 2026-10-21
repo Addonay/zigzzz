@@ -33,7 +33,7 @@ git push origin v0.1.1
 
 GitHub Actions builds every package and publishes the release.
 
-CI and releases cache Zig build artifacts and fetched packages. Release builds
+CI and releases cache the installed compiler, Zig build artifacts, and fetched packages. Release builds
 also cache AppImage packaging tools. Cache keys include the runner platform,
 Zig version, dependency manifest, and commit; compatible older caches seed new
 builds, while Zig checks which outputs need rebuilding. A manual Release workflow
