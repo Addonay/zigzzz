@@ -5,7 +5,7 @@
 //! table of per-widget animation values.
 
 const std = @import("std");
-const sdl = @import("zsdl3");
+const sdl = @import("sdl3");
 const gfx = @import("render.zig");
 const geo = @import("geometry.zig");
 const theme = @import("theme.zig");
@@ -403,7 +403,7 @@ pub const Ui = struct {
             r.text(value.slice(), left - scroll, text_y, p.foreground, .body);
         }
 
-        if (active and !self.select_all and sdl.time.getTicks() % 1000 < 550) {
+        if (active and !self.select_all and sdl.timer.getMillisecondsSinceInit() % 1000 < 550) {
             r.box(.{
                 .x = left - scroll + caret_width,
                 .y = rect.y + 8,
@@ -542,84 +542,84 @@ pub const Ui = struct {
         self.caret += text.insert(self.caret, value);
     }
 
-    pub fn keyboard(self: *Ui, event: sdl.core.SDL_KeyboardEvent) bool {
-        const ctrl = event.mod & 0xc0 != 0;
+    pub fn keyboard(self: *Ui, event: sdl.events.Keyboard) bool {
+        const ctrl = event.mod.left_control or event.mod.right_control;
 
         if (self.focused_text) |value| {
             self.caret = @min(self.caret, value.length);
 
-            if (ctrl and event.key == 'a') {
+            if (ctrl and event.key == .a) {
                 self.select_all = true;
                 self.caret = value.length;
                 return true;
             }
 
-            if (ctrl and event.key == 'v') {
-                if (sdl.clipboard.getClipboardText()) |clipboard| {
-                    defer sdl.stdinc.free(@ptrCast(@constCast(clipboard)));
-                    self.insert(std.mem.span(clipboard));
-                }
+            if (ctrl and event.key == .v) {
+                if (sdl.clipboard.getText()) |clipboard| {
+                    defer sdl.free(clipboard);
+                    self.insert(clipboard);
+                } else |_| {}
 
                 return true;
             }
 
-            if (ctrl and event.key == 'c') {
+            if (ctrl and event.key == .c) {
                 if (self.select_all) {
                     var buffer: [513:0]u8 = @splat(0);
                     @memcpy(buffer[0..value.length], value.slice());
-                    _ = sdl.clipboard.setClipboardText(&buffer);
+                    sdl.clipboard.setText(buffer[0..value.length :0]) catch {};
                 }
 
                 return true;
             }
 
-            switch (event.key) {
-                8, 127 => {
+            switch (event.key orelse return false) {
+                .backspace, .delete => {
                     if (self.select_all) {
                         value.set("");
                         self.caret = 0;
                         self.select_all = false;
-                    } else if (event.key == 8 and self.caret > 0) {
+                    } else if (event.key == .backspace and self.caret > 0) {
                         const before = value.previous(self.caret);
                         value.remove(before, self.caret);
                         self.caret = before;
-                    } else if (event.key == 127) {
+                    } else if (event.key == .delete) {
                         value.remove(self.caret, value.next(self.caret));
                     }
 
                     return true;
                 },
 
-                0x40000050 => {
+                .left => {
                     self.caret = value.previous(self.caret);
                     self.select_all = false;
                     return true;
                 },
 
-                0x4000004f => {
+                .right => {
                     self.caret = value.next(self.caret);
                     self.select_all = false;
                     return true;
                 },
 
-                0x4000004a => {
+                .home => {
                     self.caret = 0;
                     self.select_all = false;
                     return true;
                 },
 
-                0x4000004d => {
+                .end => {
                     self.caret = value.length;
                     self.select_all = false;
                     return true;
                 },
 
-                13 => {
+                .return_key => {
                     self.submitted = true;
                     return true;
                 },
 
-                27 => {
+                .escape => {
                     self.focused_text = null;
                     return true;
                 },
@@ -630,7 +630,7 @@ pub const Ui = struct {
 
         if (event.repeat) return false;
 
-        if (event.key == 9 and self.widget_count > 0) {
+        if (event.key == .tab and self.widget_count > 0) {
             var current = self.widget_count - 1;
 
             for (self.widgets[0..self.widget_count], 0..) |widget, index| {
@@ -640,7 +640,7 @@ pub const Ui = struct {
                 }
             }
 
-            const backwards = event.mod & 3 != 0;
+            const backwards = event.mod.left_shift or event.mod.right_shift;
             const index = if (backwards)
                 (current + self.widget_count - 1) % self.widget_count
             else
@@ -653,7 +653,7 @@ pub const Ui = struct {
             return true;
         }
 
-        if (event.key == 13) {
+        if (event.key == .return_key) {
             self.activate = true;
             return true;
         }
@@ -667,7 +667,7 @@ pub const Ui = struct {
     pub fn drawTooltip(self: *Ui, width: f32, height: f32) void {
         const r = self.renderer;
         const p = self.palette;
-        const now = sdl.time.getTicks();
+        const now = sdl.timer.getMillisecondsSinceInit();
 
         if (self.hot != self.previous_hot) {
             self.previous_hot = self.hot;
@@ -727,3 +727,32 @@ pub const Ui = struct {
         r.centered(self.tooltip, rect, fade(p.background, amount), .small);
     }
 };
+
+test "typed keyboard events preserve UTF-8 editing and control shortcuts" {
+    var text = Text.init("café");
+    var ui = Ui{ .renderer = undefined, .focused_text = &text, .caret = text.length };
+    var key = sdl.events.Keyboard{
+        .common = .{ .timestamp = 0 },
+        .id = null,
+        .scancode = null,
+        .key = .left,
+        .mod = .{},
+        .raw = 0,
+        .down = true,
+        .repeat = false,
+    };
+    try std.testing.expect(ui.keyboard(key));
+    try std.testing.expectEqual(@as(usize, 3), ui.caret);
+    key.key = .delete;
+    try std.testing.expect(ui.keyboard(key));
+    try std.testing.expectEqualStrings("caf", text.slice());
+    key.key = .a;
+    key.mod.right_control = true;
+    try std.testing.expect(ui.keyboard(key));
+    try std.testing.expect(ui.select_all);
+    key.key = .backspace;
+    key.mod = .{};
+    try std.testing.expect(ui.keyboard(key));
+    try std.testing.expectEqual(@as(usize, 0), text.length);
+    try std.testing.expectEqual(@as(usize, 0), ui.caret);
+}

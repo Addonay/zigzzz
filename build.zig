@@ -2,58 +2,63 @@ const std = @import("std");
 
 const manifest = @import("build.zig.zon");
 
+const dependency_optimize: std.builtin.Optimize = .fast;
+
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
+    const target = b.graph.host;
     const optimize = b.standardOptimizeOption(.{});
 
-    // Import the fetched binding module without building zsdl3's older examples.
-    // Its example build uses b.args, which was removed in Zig 0.17.
     const packages = @import("root").dependencies.packages;
-    const bindings = @field(packages, manifest.dependencies.zsdl.hash);
     const layout_package = @field(packages, manifest.dependencies.zlay.hash);
 
-    // Upstream SDL_RenderReadPixels names pixels.SDL_Surface, although that
-    // declaration lives in surface.zig. Correct that one type in generated
-    // build inputs; never mutate the fetched package or maintain SDL externs.
-    const binding_source = b.pathJoin(&.{ bindings.build_root, "src" });
-    const render_source = std.Io.Dir.cwd().readFileAlloc(
-        b.graph.io, b.pathJoin(&.{ binding_source, "render.zig" }), b.allocator, .unlimited,
-    ) catch @panic("Cannot read the fetched SDL bindings");
-    const corrected_render = std.mem.replaceOwned(u8, b.allocator, render_source,
-        "?*pixels.SDL_Surface", "?*surface.SDL_Surface") catch @panic("OOM");
-    const generated = b.addWriteFiles();
-    const binding_directory = generated.addCopyDirectory(.{ .cwd_relative = binding_source }, "zsdl3", .{
-        .exclude_extensions = &.{"render.zig"},
-    });
-    _ = generated.add("zsdl3/render.zig", corrected_render);
+    const assets = b.createModule(.{ .root_source_file = b.path("assets/embedded.zig") });
 
-    const sdl = b.createModule(.{
-        .root_source_file = binding_directory.path(b, "root.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    const options = b.addOptions();
-    options.addOption(bool, "enable_sdl_image", false);
-    options.addOption(bool, "enable_sdl_ttf", false);
-    options.addOption(bool, "enable_sdl_mixer", false);
-    sdl.addOptions("build_options", options);
-    sdl.linkSystemLibrary("SDL3", .{});
+    const sdl_dep = b.dependency("sdl3", .{ .target = target, .optimize = dependency_optimize, .ext_image = true });
+    const sdl = sdl_dep.module("sdl3");
+
+    // v0.2.3 incorrectly gives its slice-based clipboard callback a C ABI.
+    // Patch build inputs only; the fetched package stays untouched.
+    const clipboard_source = std.Io.Dir.cwd().readFileAlloc(
+        b.graph.io,
+        b.pathJoin(&.{ @field(packages, manifest.dependencies.sdl3.hash).build_root, "src/clipboard.zig" }),
+        b.allocator,
+        .unlimited,
+    ) catch @panic("Cannot read zig-sdl3 clipboard bindings");
+    const callback_signature = "mime_type: ?[:0]const u8) callconv(.c) ?[]u8";
+    if (std.mem.count(u8, clipboard_source, callback_signature) != 1)
+        @panic("Review zig-sdl3 clipboard callback patch after updating the dependency");
+    const clipboard_fixed = std.mem.replaceOwned(u8, b.allocator, clipboard_source, callback_signature, "mime_type: ?[:0]const u8) ?[]u8") catch @panic("OOM");
+    const patched = b.addWriteFiles();
+    const patched_source = patched.addCopyDirectory(sdl_dep.path("src"), "sdl3", .{ .exclude_extensions = &.{"clipboard.zig"} });
+    _ = patched.add("sdl3/clipboard.zig", clipboard_fixed);
+    sdl.root_source_file = patched_source.path(b, "sdl3.zig");
+
+    const ft_dep = b.dependency("freetype", .{ .target = target, .optimize = dependency_optimize });
+    const ft_lib = ft_dep.artifact("freetype");
+    const expat_dep = b.dependency("expat", .{ .target = target, .optimize = dependency_optimize });
+    const expat_lib = expat_dep.artifact("expat");
 
     const zlay = b.createModule(.{
         .root_source_file = .{ .cwd_relative = b.pathJoin(&.{ layout_package.build_root, "src/root.zig" }) },
         .target = target,
-        .optimize = optimize,
+        .optimize = dependency_optimize,
     });
 
     const native = b.addTranslateC(.{
         .root_source_file = b.path("src/native.h"),
         .target = target,
-        .optimize = optimize,
+        .optimize = dependency_optimize,
     });
-    native.addIncludePath(.{ .cwd_relative = "/usr/include/freetype2" });
-    native.linkSystemLibrary("freetype", .{});
-    native.linkSystemLibrary("expat", .{});
+    native.addIncludePath(ft_lib.getEmittedIncludeTree());
+    native.addIncludePath(expat_lib.getEmittedIncludeTree());
+
+    const native_module = native.createModule();
+    const name = switch (optimize) {
+        .debug => "zigzzz",
+        .small => "zigzzz-small",
+        .fast => "zigzzz-fast",
+        .safe => "zigzzz-safe",
+    };
 
     const module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -61,37 +66,34 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    module.addImport("zsdl3", sdl);
+    module.addImport("sdl3", sdl);
     module.addImport("zlay", zlay);
-    module.addImport("native", native.createModule());
-    module.addImport("assets", b.createModule(.{
-        .root_source_file = b.path("assets/embedded.zig"),
-    }));
+    module.addImport("native", native_module);
+    module.addImport("assets", assets);
+    module.linkLibrary(ft_lib);
+    module.linkLibrary(expat_lib);
 
-    const name = switch (optimize) {
-        .fast => "zigzzz-fast",
-        .small => "zigzzz-small",
-        .safe => "zigzzz-safe",
-        else => "zigzzz",
-    };
-
-    const executable = b.addExecutable(.{ .name = name, .root_module = module });
-    b.installArtifact(executable);
-
-    const run = b.addRunArtifact(executable);
+    const exe = b.addExecutable(.{ .name = name, .root_module = module });
+    b.installArtifact(exe);
+    const run = b.addRunArtifact(exe);
     b.step("run", "Run the workspace").dependOn(&run.step);
 
-    const test_module = b.createModule(.{
-        .root_source_file = b.path("src/core_tests.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    test_module.addImport("zsdl3", sdl);
-    test_module.addImport("zlay", zlay);
-    test_module.addImport("native", native.createModule());
-    test_module.addImport("assets", module.import_table.get("assets").?);
-    const tests = b.addTest(.{ .root_module = test_module });
+    const tests = b.addTest(.{ .root_module = module });
     const run_tests = b.addRunArtifact(tests);
-    b.step("test", "Check spreadsheet parsing, preferences, and KML conversion").dependOn(&run_tests.step);
+    b.step("test", "Run application tests").dependOn(&run_tests.step);
+
+    // Report installed binary sizes. This only reads zig-out; it never builds
+    // missing variants and ignores any custom install prefix.
+    const size_tool = b.addExecutable(.{
+        .name = "zigzzz-size",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/size.zig"),
+            .target = b.graph.host,
+            .optimize = .debug,
+        }),
+    });
+    const size_run = b.addRunArtifact(size_tool);
+    size_run.setCwd(b.path("."));
+    size_run.stdio = .inherit;
+    b.step("size", "Display the size of each built release").dependOn(&size_run.step);
 }

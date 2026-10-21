@@ -1,4 +1,4 @@
-const sdl = @import("zsdl3");
+const sdl = @import("sdl3");
 
 pub const Color = [4]u8;
 
@@ -8,7 +8,7 @@ pub const Rect = struct {
     w: f32 = 0,
     h: f32 = 0,
 
-    pub fn native(self: Rect) sdl.pixels.SDL_FRect {
+    pub fn native(self: Rect) sdl.rect.FRect {
         return .{ .x = self.x, .y = self.y, .w = self.w, .h = self.h };
     }
 

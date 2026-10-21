@@ -2,7 +2,7 @@
 //! controls, and the rounded window shape.
 
 const std = @import("std");
-const sdl = @import("zsdl3");
+const sdl = @import("sdl3");
 const geo = @import("geometry.zig");
 const theme = @import("theme.zig");
 
@@ -43,80 +43,69 @@ pub fn controlRect(width: f32, index: usize) geo.Rect {
 pub const controls_width: f32 = 3 * (control_size + 2) + 18;
 
 pub fn hitTest(
-    window_optional: ?*sdl.video.SDL_Window,
-    point_optional: ?*const sdl.video.SDL_Point,
-    user_data: ?*anyopaque,
-) callconv(.c) sdl.video.SDL_HitTestResult {
-    const window = window_optional orelse return .SDL_HITTEST_NORMAL;
-    const point = point_optional orelse return .SDL_HITTEST_NORMAL;
-    const chrome: *const Chrome = @ptrCast(@alignCast(user_data.?));
-
-    var width: c_int = 0;
-    var height: c_int = 0;
-    _ = sdl.video.getWindowSize(window, &width, &height);
-
-    const flags = sdl.video.getWindowFlags(window);
-    const maximized = flags & (sdl.video.SDL_WINDOW_MAXIMIZED | sdl.video.SDL_WINDOW_FULLSCREEN) != 0;
+    window: sdl.video.Window,
+    point: sdl.rect.IPoint,
+    chrome_optional: ?*Chrome,
+) sdl.video.HitTestResult {
+    const chrome = chrome_optional orelse return .normal;
+    const width, const height = window.getSize() catch return .normal;
+    const flags = window.getFlags();
+    const maximized = flags.maximized or flags.fullscreen;
 
     if (!maximized) {
         if (point.y < 4) {
-            if (point.x < 12) return .SDL_HITTEST_RESIZE_TOPLEFT;
-            if (point.x > width - 12) return .SDL_HITTEST_RESIZE_TOPRIGHT;
-            return .SDL_HITTEST_RESIZE_TOP;
+            if (point.x < 12) return .resize_top_left;
+            if (point.x > width - 12) return .resize_top_right;
+            return .resize_top;
         }
 
         if (point.y > height - 4) {
-            if (point.x < 12) return .SDL_HITTEST_RESIZE_BOTTOMLEFT;
-            if (point.x > width - 12) return .SDL_HITTEST_RESIZE_BOTTOMRIGHT;
-            return .SDL_HITTEST_RESIZE_BOTTOM;
+            if (point.x < 12) return .resize_bottom_left;
+            if (point.x > width - 12) return .resize_bottom_right;
+            return .resize_bottom;
         }
 
-        if (point.x < 4) return .SDL_HITTEST_RESIZE_LEFT;
-        if (point.x > width - 4) return .SDL_HITTEST_RESIZE_RIGHT;
+        if (point.x < 4) return .resize_left;
+        if (point.x > width - 4) return .resize_right;
     }
 
     const x = geo.f(point.x);
     const y = geo.f(point.y);
 
-    if (y >= theme.toolbar_height) return .SDL_HITTEST_NORMAL;
+    if (y >= theme.toolbar_height) return .normal;
 
     for (0..3) |index| {
-        if (controlRect(geo.f(width), index).contains(x, y)) return .SDL_HITTEST_NORMAL;
+        if (controlRect(geo.f(width), index).contains(x, y)) return .normal;
     }
 
     for (chrome.interactive[0..chrome.interactive_count]) |rect| {
-        if (rect.contains(x, y)) return .SDL_HITTEST_NORMAL;
+        if (rect.contains(x, y)) return .normal;
     }
 
-    return .SDL_HITTEST_DRAGGABLE;
+    return .draggable;
 }
 
 pub const Shape = struct {
-    pixel_width: c_int = 0,
-    pixel_height: c_int = 0,
-    logical_width: c_int = 0,
-    logical_height: c_int = 0,
+    pixel_width: usize = 0,
+    pixel_height: usize = 0,
+    logical_width: usize = 0,
+    logical_height: usize = 0,
     rounded: bool = false,
 
-    pub fn update(self: *Shape, allocator: std.mem.Allocator, window: *sdl.video.SDL_Window) !void {
-        const flags = sdl.video.getWindowFlags(window);
+    pub fn update(self: *Shape, allocator: std.mem.Allocator, window: sdl.video.Window) !void {
+        const flags = window.getFlags();
 
-        if (flags & (sdl.video.SDL_WINDOW_MAXIMIZED | sdl.video.SDL_WINDOW_FULLSCREEN) != 0) {
+        if (flags.maximized or flags.fullscreen) {
             if (self.rounded) {
-                if (!sdl.video.setWindowShape(window, null)) return error.WindowShape;
+                try window.setShape(null);
                 self.rounded = false;
             }
 
             return;
         }
 
-        var width: c_int = 0;
-        var height: c_int = 0;
-        var logical_width: c_int = 0;
-        var logical_height: c_int = 0;
-
-        _ = sdl.video.getWindowSize(window, &logical_width, &logical_height);
-        _ = sdl.video.getWindowSizeInPixels(window, &width, &height);
+        const logical_width, const logical_height = try window.getSize();
+        const width, const height = try window.getSizeInPixels();
 
         if (width <= 0 or height <= 0 or logical_width <= 0 or logical_height <= 0) return;
 
@@ -154,18 +143,9 @@ pub const Shape = struct {
             }
         }
 
-        const surface = sdl.surface.createSurfaceFrom(
-            width,
-            height,
-            sdl.pixels.SDL_PIXELFORMAT_RGBA32,
-            pixels.ptr,
-            width * 4,
-        ) orelse return error.Surface;
-        defer sdl.surface.destroySurface(surface);
-
-        // zsdl3 uses an opaque surface type in video and a concrete one in
-        // surface; both refer to the same SDL-owned object.
-        if (!sdl.video.setWindowShape(window, @ptrCast(surface))) return error.WindowShape;
+        const surface = try sdl.surface.Surface.initFrom(width, height, .array_rgba_32, pixels);
+        defer surface.deinit();
+        try window.setShape(surface);
 
         self.* = .{
             .pixel_width = width,

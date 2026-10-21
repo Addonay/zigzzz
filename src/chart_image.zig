@@ -3,7 +3,7 @@
 //! when pasted into documents and spreadsheets.
 
 const std = @import("std");
-const sdl = @import("zsdl3");
+const sdl = @import("sdl3");
 const App = @import("app.zig").App;
 const charts = @import("charts.zig");
 const Rect = @import("geometry.zig").Rect;
@@ -15,29 +15,20 @@ const scale = 2;
 
 pub fn render(app: *App, index: usize, view: charts.View, allocator: std.mem.Allocator) ![]u8 {
     const renderer = app.renderer;
-    const api = sdl.render;
 
-    const previous_target = api.getRenderTarget(renderer.handle);
-    var scale_x: f32 = 1;
-    var scale_y: f32 = 1;
-    _ = api.getRenderScale(renderer.handle, &scale_x, &scale_y);
+    const previous_target = renderer.handle.getTarget();
+    const scale_x, const scale_y = try renderer.handle.getScale();
 
     const previous_clip = renderer.clip_rect;
     const previous_blocked = app.ui.blocked;
     const previous_image = app.rendering_image;
 
-    const target = api.createTexture(
-        renderer.handle,
-        sdl.pixels.SDL_PIXELFORMAT_RGBA32,
-        api.SDL_TEXTUREACCESS_TARGET,
-        width * scale,
-        height * scale,
-    ) orelse return error.ChartImage;
-    defer api.destroyTexture(target);
+    const target = try renderer.handle.createTexture(.array_rgba_32, .target, width * scale, height * scale);
+    defer target.deinit();
 
     defer {
-        _ = api.setRenderTarget(renderer.handle, previous_target);
-        _ = api.setRenderScale(renderer.handle, scale_x, scale_y);
+        renderer.handle.setTarget(previous_target) catch {};
+        renderer.handle.setScale(scale_x, scale_y) catch {};
 
         if (previous_clip) |clip| renderer.clip(clip) else renderer.unclip();
 
@@ -45,15 +36,15 @@ pub fn render(app: *App, index: usize, view: charts.View, allocator: std.mem.All
         app.rendering_image = previous_image;
     }
 
-    _ = api.setRenderTarget(renderer.handle, target);
-    _ = api.setRenderScale(renderer.handle, scale, scale);
+    try renderer.handle.setTarget(target);
+    try renderer.handle.setScale(scale, scale);
     renderer.unclip();
 
     app.ui.blocked = true;
     app.rendering_image = true;
 
     renderer.color(app.palette().card);
-    _ = api.renderClear(renderer.handle);
+    try renderer.handle.clear();
 
     var image_view = view;
     image_view.hover = false;
@@ -64,16 +55,13 @@ pub fn render(app: *App, index: usize, view: charts.View, allocator: std.mem.All
     charts.card(app, index, rect, image_view);
     renderer.unclip();
 
-    const raw = api.renderReadPixels(renderer.handle, null) orelse return error.ChartImage;
-    defer sdl.surface.destroySurface(@ptrCast(raw));
-
-    const converted = sdl.surface.convertSurface(@ptrCast(raw), sdl.pixels.SDL_PIXELFORMAT_RGBA32) orelse return error.ChartImage;
-    defer sdl.surface.destroySurface(converted);
-
-    const pixels: [*]const u8 = @ptrCast(converted.pixels.?);
-    const pitch: usize = @intCast(converted.pitch);
-
-    return png.encode(allocator, pixels[0 .. pitch * height * scale], width * scale, height * scale, pitch);
+    const raw = try renderer.handle.readPixels(null);
+    defer raw.deinit();
+    const converted = try raw.convertFormat(.array_rgba_32);
+    defer converted.deinit();
+    const pixels = converted.getPixels() orelse return error.ChartImage;
+    const pitch = converted.getPitch();
+    return png.encode(allocator, pixels, width * scale, height * scale, pitch);
 }
 
 const Clipboard = struct {
@@ -85,28 +73,51 @@ pub fn copy(app: *App, index: usize, view: charts.View) !void {
     const data = try render(app, index, view, app.allocator);
     errdefer app.allocator.free(data);
 
-    const clipboard = try app.allocator.create(Clipboard);
-    errdefer app.allocator.destroy(clipboard);
-
-    clipboard.* = .{ .allocator = app.allocator, .data = data };
-
-    var types = [_]?[*:0]const u8{"image/png"};
-    if (!sdl.clipboard.setClipboardData(provide, cleanup, clipboard, &types, types.len)) return error.ClipboardUnavailable;
-
+    try setClipboardImage(app.allocator, data);
     app.success("Chart copied to clipboard.");
 }
 
-fn provide(user_data: ?*anyopaque, _: [*:0]const u8, size: ?*usize) callconv(.c) ?*const anyopaque {
-    const clipboard: *Clipboard = @ptrCast(@alignCast(user_data.?));
+/// Transfer the PNG buffer to SDL; its cleanup callback releases it later.
+fn setClipboardImage(allocator: std.mem.Allocator, data: []u8) !void {
+    const clipboard = try allocator.create(Clipboard);
+    errdefer allocator.destroy(clipboard);
 
-    if (size) |output| output.* = clipboard.data.len;
-    return clipboard.data.ptr;
+    clipboard.* = .{ .allocator = allocator, .data = data };
+
+    var types = [_][*:0]const u8{"image/png"};
+    try sdl.clipboard.setData(Clipboard, provide, cleanup, clipboard, &types);
 }
 
-fn cleanup(user_data: ?*anyopaque) callconv(.c) void {
-    const clipboard: *Clipboard = @ptrCast(@alignCast(user_data.?));
-    const allocator = clipboard.allocator;
+fn provide(clipboard_optional: ?*Clipboard, mime_type: ?[:0]const u8) ?[]u8 {
+    const clipboard = clipboard_optional orelse return null;
+    const mime = mime_type orelse return null;
+    if (!std.mem.eql(u8, mime, "image/png")) return null;
+    return clipboard.data;
+}
 
+fn cleanup(clipboard_optional: ?*Clipboard) void {
+    const clipboard = clipboard_optional orelse return;
+    const allocator = clipboard.allocator;
     allocator.free(clipboard.data);
     allocator.destroy(clipboard);
+}
+
+test "chart PNG clipboard callbacks preserve binary data and release ownership" {
+    try sdl.hints.setWithPriority(.video_driver, "dummy", .override);
+    try sdl.init(.{ .video = true });
+    defer sdl.shutdown();
+
+    const data = try png.encode(std.testing.allocator, &.{ 10, 20, 30, 255 }, 1, 1, 4);
+    {
+        errdefer std.testing.allocator.free(data);
+        try setClipboardImage(std.testing.allocator, data);
+    }
+    defer sdl.clipboard.clearData() catch {};
+
+    const received = try sdl.clipboard.getData("image/png");
+    defer sdl.free(@constCast(received));
+    try std.testing.expectEqualSlices(u8, data, received);
+
+    // Replacing the image invokes cleanup, checked by the testing allocator.
+    try sdl.clipboard.setText("replacement");
 }

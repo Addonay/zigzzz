@@ -33,7 +33,10 @@ pub const Report = struct {
         for (1..@min(403, book.row_count)) |row| {
             var empty = true;
             for (0..book.column_count) |column| {
-                if (book.cell(row, column).len > 0) { empty = false; break; }
+                if (book.cell(row, column).len > 0) {
+                    empty = false;
+                    break;
+                }
             }
 
             if (empty) {
@@ -69,7 +72,9 @@ pub const Report = struct {
             if (samples.items.len == 0) continue;
             for (series.items) |item| if (std.mem.eql(u8, item.name, kpi)) return error.DuplicateKpiInArea;
             std.mem.sort(Point, samples.items, {}, struct {
-                fn less(_: void, a: Point, b: Point) bool { return a.day < b.day; }
+                fn less(_: void, a: Point, b: Point) bool {
+                    return a.day < b.day;
+                }
             }.less);
             try series.append(memory, .{ .name = try memory.dupe(u8, kpi), .points = try samples.toOwnedSlice(memory) });
         }
@@ -173,4 +178,32 @@ pub fn dateParts(day: i32) struct { year: i32, month: i32, day: i32 } {
     const month = mp + @as(i32, if (mp < 10) 3 else -9);
     year += @as(i32, if (month <= 2) 1 else 0);
     return .{ .year = year, .month = month, .day = d };
+}
+
+test "Excel and string dates agree across leap boundaries" {
+    try std.testing.expectEqual(parseDate("2024-02-29"), parseDate("29-02-2024"));
+    try std.testing.expectEqual(parseDate("2024-02-29"), parseDate("45351"));
+    try std.testing.expectEqual(@as(?i32, null), parseDate("not a date"));
+    const day = parseDate("2024-02-29").?;
+    const parts = dateParts(day + 1);
+    try std.testing.expectEqual(@as(i32, 2024), parts.year);
+    try std.testing.expectEqual(@as(i32, 3), parts.month);
+    try std.testing.expectEqual(@as(i32, 1), parts.day);
+}
+
+test "reference QoS fixture preserves all areas and samples" {
+    const path = std.c.getenv("ZIGZZZ_QOS_FIXTURE") orelse return error.SkipZigTest;
+    var book = try Workbook.load(std.testing.allocator, std.testing.io, std.mem.span(path));
+    defer book.deinit();
+    var data = try Report.parse(std.testing.allocator, &book);
+    defer data.deinit();
+    try std.testing.expectEqual(@as(usize, 6), data.areas.len);
+    try std.testing.expectEqual(@as(usize, 22), data.names.len);
+    var points: usize = 0;
+    for (data.areas) |area| {
+        try std.testing.expectEqual(@as(usize, 22), area.series.len);
+        for (area.series) |series| points += series.points.len;
+    }
+    try std.testing.expectEqual(@as(usize, 23760), points);
+    try std.testing.expectEqualStrings("Kenya", data.areas[0].name);
 }

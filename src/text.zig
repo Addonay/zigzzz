@@ -50,3 +50,17 @@ pub const Text = struct {
         return at;
     }
 };
+
+test "UTF-8 editing preserves boundaries and capacity" {
+    var text = Text.init("café");
+    try std.testing.expectEqual(@as(usize, 3), text.previous(text.length));
+    text.remove(3, text.length);
+    try std.testing.expectEqual(@as(usize, 2), text.insert(3, "é"));
+    try std.testing.expectEqualStrings("café", text.slice());
+    var long: [513]u8 = @splat('x');
+    long[511] = 0xc3;
+    long[512] = 0xa9;
+    text.set(&long);
+    try std.testing.expectEqual(@as(usize, 511), text.length);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(text.slice()));
+}

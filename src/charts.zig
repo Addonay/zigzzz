@@ -6,7 +6,7 @@
 //! tooltip. The dashboard layout follows ldd's `dashboard.svelte`.
 
 const std = @import("std");
-const sdl = @import("zsdl3");
+const sdl = @import("sdl3");
 const gfx = @import("render.zig");
 const App = @import("app.zig").App;
 const report = @import("report.zig");
@@ -459,7 +459,7 @@ fn collect(app: *const App, output: *[prefs.max_kpis]usize, group: ?usize) usize
     for (data.names, 0..) |name, index| {
         const status = statusOf(app, name);
 
-        if (app.status_filter > 0 and 1 + @intFromEnum(status) != app.status_filter) continue;
+        if (app.status_filter > 0 and 1 + @backingInt(status) != app.status_filter) continue;
 
         const member_group = groupOf(app, name);
 
@@ -518,7 +518,7 @@ fn filterRow(app: *App, x: f32, y: f32, width: f32) f32 {
     const data = &app.report.?;
 
     var counts = [_]usize{ data.names.len, 0, 0, 0 };
-    for (data.names) |name| counts[1 + @intFromEnum(statusOf(app, name))] += 1;
+    for (data.names) |name| counts[1 + @backingInt(statusOf(app, name))] += 1;
 
     const labels = [_][]const u8{ "All", "Passing", "Failing", "No threshold" };
     const icons = [_]?gfx.Icon{ null, .circle_check, .circle_x, .circle_help };
@@ -746,7 +746,7 @@ fn statusDot(app: *App, x: f32, y: f32, status: report.Status, animate: bool) vo
 
     if (status == .failing and animate) {
         // ldd's statusPulse: a ring grows to 4 px and fades every 2 s.
-        const time = f(sdl.time.getTicks() % 2000) / 2000;
+        const time = f(sdl.timer.getMillisecondsSinceInit() % 2000) / 2000;
         const phase = if (time < 0.5) time * 2 else (1 - time) * 2;
         const eased = phase * phase * (3 - 2 * phase);
 

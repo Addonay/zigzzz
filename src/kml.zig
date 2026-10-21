@@ -66,7 +66,10 @@ pub const Mapping = struct {
                 const header = std.mem.trim(u8, book.cell(0, column), " \t\r\n");
                 var matches = false;
                 for (field.aliases) |alias| matches = matches or normalizedEqual(header, alias);
-                if (matches) { result.columns[index] = column; break; }
+                if (matches) {
+                    result.columns[index] = column;
+                    break;
+                }
             }
         }
         var buffer: [512]u8 = undefined;
@@ -480,8 +483,13 @@ pub fn generate(allocator: std.mem.Allocator, io: std.Io, book: *const Workbook,
         } else {
             entry.value_ptr.* = sites.items.len;
             try sites.append(memory, .{
-                .values = values, .latitude = latitude, .longitude = longitude,
-                .speed = speed, .speed_sum = speed, .volume = volume, .traffic = traffic,
+                .values = values,
+                .latitude = latitude,
+                .longitude = longitude,
+                .speed = speed,
+                .speed_sum = speed,
+                .volume = volume,
+                .traffic = traffic,
                 .spectrum = mapping.numeric(book, row, 7, 700),
                 .azimuth = mapping.numeric(book, row, 9, 32.5),
                 .range = mapping.numeric(book, row, 10, 500),
@@ -491,7 +499,9 @@ pub fn generate(allocator: std.mem.Allocator, io: std.Io, book: *const Workbook,
     }
     if (sites.items.len == 0) return error.NoSiteRows;
     std.mem.sort(Site, sites.items, {}, struct {
-        fn less(_: void, a: Site, b: Site) bool { return std.mem.lessThan(u8, a.values[0], b.values[0]); }
+        fn less(_: void, a: Site, b: Site) bool {
+            return std.mem.lessThan(u8, a.values[0], b.values[0]);
+        }
     }.less);
 
     var out = Document{ .allocator = memory };
@@ -510,7 +520,9 @@ pub fn generate(allocator: std.mem.Allocator, io: std.Io, book: *const Workbook,
         try out.print("</description><Point><coordinates>{d},{d},0</coordinates></Point></Placemark>\n", .{ site.longitude, site.latitude });
         if (!mapping.sectors) continue;
         var band: f64 = 0;
-        for (bands[0..6]) |candidate| { if (site.spectrum == candidate) band = candidate; }
+        for (bands[0..6]) |candidate| {
+            if (site.spectrum == candidate) band = candidate;
+        }
         if (site.speed < 3) band = -1;
         const radius = if (mapping.limit_range) limitedRange(site.spectrum) else site.range;
         if (!std.math.isFinite(radius) or radius < 0 or radius > 1_000_000 or site.beamwidth < 0 or site.beamwidth > 360) return error.InvalidSectorGeometry;
@@ -566,4 +578,20 @@ fn destination(latitude: f64, longitude: f64, distance: f64, bearing: f64) struc
     const new_lat = std.math.asin(@sin(lat) * @cos(arc) + @cos(lat) * @sin(arc) * @cos(angle));
     const new_lon = lon + std.math.atan2(@sin(angle) * @sin(arc) * @cos(lat), @cos(arc) - @sin(lat) * @sin(new_lat));
     return .{ .latitude = new_lat / radians, .longitude = new_lon / radians };
+}
+
+test "reference KML fixture aggregates 868 rows into 129 sites" {
+    const path = std.c.getenv("ZIGZZZ_KML_FIXTURE") orelse return error.SkipZigTest;
+    var book = try Workbook.load(std.testing.allocator, std.testing.io, std.mem.span(path));
+    defer book.deinit();
+    var mapping = Mapping.init(&book);
+    mapping.output.set("/tmp/zigzzz-test-output.kml");
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, mapping.output.slice()) catch {};
+    const count = try generate(std.testing.allocator, std.testing.io, &book, &mapping);
+    try std.testing.expectEqual(@as(usize, 129), count);
+    const xml = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, mapping.output.slice(), std.testing.allocator, .unlimited);
+    defer std.testing.allocator.free(xml);
+    try std.testing.expectEqual(@as(usize, 258), std.mem.count(u8, xml, "<Placemark>"));
+    try std.testing.expectEqual(@as(usize, 129), std.mem.count(u8, xml, "<Polygon>"));
+    try std.testing.expect(std.mem.endsWith(u8, xml, "</Document></kml>\n"));
 }

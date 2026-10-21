@@ -1,5 +1,5 @@
 const std = @import("std");
-const sdl = @import("zsdl3");
+const sdl = @import("sdl3");
 const gfx = @import("render.zig");
 const geo = @import("geometry.zig");
 const theme = @import("theme.zig");
@@ -26,7 +26,7 @@ pub const ToastKind = enum { info, success, failure };
 pub const App = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
-    window: *sdl.video.SDL_Window,
+    window: sdl.video.Window,
     renderer: *gfx.Renderer,
     ui: Ui,
     layout: Layout,
@@ -92,7 +92,7 @@ pub const App = struct {
     dialog_state: std.atomic.Value(u8) = .init(0),
     dialog_page: Page = .qos,
 
-    pub fn init(self: *App, allocator: std.mem.Allocator, io: std.Io, window: *sdl.video.SDL_Window, renderer: *gfx.Renderer) !void {
+    pub fn init(self: *App, allocator: std.mem.Allocator, io: std.Io, window: sdl.video.Window, renderer: *gfx.Renderer) !void {
         const path = try settingsPath(allocator);
         errdefer allocator.free(path);
 
@@ -178,7 +178,7 @@ pub const App = struct {
     }
 
     fn showToast(self: *App, message: []const u8, kind: ToastKind) void {
-        const now = sdl.time.getTicks();
+        const now = sdl.timer.getMillisecondsSinceInit();
 
         self.toast.set(message);
         self.toast_kind = kind;
@@ -218,66 +218,45 @@ pub const App = struct {
 
     // ── Events ─────────────────────────────────────────────────────────
 
-    pub fn event(self: *App, event_value: sdl.core.SDL_Event) void {
-        switch (event_value.type) {
-            sdl.events.SDL_EVENT_QUIT, sdl.events.SDL_EVENT_WINDOW_CLOSE_REQUESTED => self.quit = true,
-
-            sdl.events.SDL_EVENT_MOUSE_BUTTON_DOWN => {
-                if (event_value.button.button != 1) return;
-
-                self.ui.press(event_value.button.x, event_value.button.y);
-
-                if (self.atSidebarEdge(event_value.button.x)) self.resize_sidebar = true;
+    pub fn event(self: *App, event_value: sdl.events.Event) void {
+        switch (event_value) {
+            .quit, .window_close_requested => self.quit = true,
+            .mouse_button_down => |button| {
+                if (button.button != .left) return;
+                self.ui.press(button.x, button.y);
+                if (self.atSidebarEdge(button.x)) self.resize_sidebar = true;
             },
-
-            sdl.events.SDL_EVENT_MOUSE_BUTTON_UP => {
-                if (event_value.button.button != 1) return;
-
-                self.ui.release(event_value.button.x, event_value.button.y);
+            .mouse_button_up => |button| {
+                if (button.button != .left) return;
+                self.ui.release(button.x, button.y);
                 self.resize_sidebar = false;
             },
-
-            sdl.events.SDL_EVENT_MOUSE_MOTION => {
-                if (self.resize_sidebar) {
-                    self.chrome.sidebar_width = std.math.clamp(event_value.motion.x, 200, 360);
-                }
+            .mouse_motion => |motion| {
+                if (self.resize_sidebar) self.chrome.sidebar_width = std.math.clamp(motion.x, 200, 360);
             },
-
-            sdl.events.SDL_EVENT_MOUSE_WHEEL => {
+            .mouse_wheel => |wheel| {
                 if (self.popup.open) {
-                    self.popup.scroll = @max(0, self.popup.scroll - event_value.wheel.y * 40);
+                    self.popup.scroll = @max(0, self.popup.scroll - wheel.scroll_y * 40);
                 } else if (self.focus_chart == null) {
-                    self.scroll_target = std.math.clamp(self.scroll_target - event_value.wheel.y * 64, 0, self.scroll_max);
+                    self.scroll_target = std.math.clamp(self.scroll_target - wheel.scroll_y * 64, 0, self.scroll_max);
                 }
             },
-
-            sdl.events.SDL_EVENT_TEXT_INPUT => {
-                if (event_value.text.text != null) self.ui.insert(std.mem.span(event_value.text.text));
-            },
-
-            sdl.events.SDL_EVENT_KEY_DOWN => self.keyDown(event_value.key),
-
-            sdl.events.SDL_EVENT_DROP_BEGIN, sdl.events.SDL_EVENT_DROP_POSITION => self.dragging = true,
-
-            sdl.events.SDL_EVENT_DROP_COMPLETE => self.dragging = false,
-
-            sdl.events.SDL_EVENT_DROP_FILE => {
+            .text_input => |text| self.ui.insert(text.text),
+            .key_down => |key| self.keyDown(key),
+            .drop_begin, .drop_position => self.dragging = true,
+            .drop_complete => self.dragging = false,
+            .drop_file => |file| {
                 self.dragging = false;
-
-                if (event_value.drop.data != null) {
-                    if (self.page == .home or self.page == .settings) self.navigate(.qos);
-
-                    self.path.set(std.mem.span(event_value.drop.data));
-                    self.importFile();
-                }
+                if (self.page == .home or self.page == .settings) self.navigate(.qos);
+                self.path.set(file.file_name);
+                self.importFile();
             },
-
             else => {},
         }
     }
 
-    fn keyDown(self: *App, key: sdl.core.SDL_KeyboardEvent) void {
-        const escape = key.key == 27;
+    fn keyDown(self: *App, key: sdl.events.Keyboard) void {
+        const escape = key.key == .escape;
 
         if (escape and self.popup.open) {
             self.popup.open = false;
@@ -287,9 +266,9 @@ pub const App = struct {
 
         if (self.ui.keyboard(key)) return;
 
-        const ctrl = key.mod & 0xc0 != 0;
+        const ctrl = key.mod.left_control or key.mod.right_control;
 
-        if (ctrl and key.key == 'b') self.chrome.sidebar_open = !self.chrome.sidebar_open;
+        if (ctrl and key.key == .b) self.chrome.sidebar_open = !self.chrome.sidebar_open;
 
         if (escape) {
             if (self.focus_chart != null) {
@@ -383,12 +362,12 @@ pub const App = struct {
         self.dialog_page = self.page;
         self.dialog_state.store(1, .release);
 
-        const filters = [_]sdl.dialog.SDL_DialogFileFilter{
+        const filters = [_]sdl.dialog.FileFilter{
             .{ .name = "Spreadsheets", .pattern = "xlsx;xlsm;csv" },
             .{ .name = "All files", .pattern = "*" },
         };
 
-        sdl.dialog.showOpenFileDialog(pickedFile, self, self.window, &filters, filters.len, null, false);
+        sdl.dialog.showOpenFile(App, pickedFile, self, self.window, &filters, null, false);
     }
 
     pub fn toggleTheme(self: *App) void {
@@ -454,19 +433,16 @@ pub const App = struct {
     /// Keep the native event queue and export feedback responsive between
     /// areas. Rendering stays on the SDL thread; no GPU work crosses threads.
     pub fn exportProgress(self: *App, area_index: usize, total: usize) !void {
-        var event_value: sdl.core.SDL_Event = undefined;
-
-        while (sdl.events.pollEvent(&event_value)) {
-            const closing = event_value.type == sdl.events.SDL_EVENT_QUIT or
-                event_value.type == sdl.events.SDL_EVENT_WINDOW_CLOSE_REQUESTED;
-
-            if (closing) {
-                self.quit = true;
-                return error.ExportCancelled;
-            }
-
-            if (event_value.type == sdl.events.SDL_EVENT_KEY_DOWN and event_value.key.key == 27) {
-                return error.ExportCancelled;
+        while (sdl.events.poll()) |event_value| {
+            switch (event_value) {
+                .quit, .window_close_requested => {
+                    self.quit = true;
+                    return error.ExportCancelled;
+                },
+                .key_down => |key| if (key.key == .escape) {
+                    return error.ExportCancelled;
+                },
+                else => {},
             }
         }
 
@@ -510,9 +486,9 @@ pub const App = struct {
 
         for (labels, icons, 0..) |label, icon, index| {
             const rect = self.layout.indexed("nav-item", index);
-            const active = @intFromEnum(self.page) == index;
+            const active = @backingInt(self.page) == index;
 
-            if (self.navItem(rect, icon, label, active, null)) self.navigate(@enumFromInt(index));
+            if (self.navItem(rect, icon, label, active, null)) self.navigate(@fromBackingInt(@intCast(index)));
         }
 
         // Context for the current tool
@@ -638,7 +614,7 @@ pub const App = struct {
     fn windowControls(self: *App) void {
         const r = self.renderer;
         const p = self.palette();
-        const maximized = sdl.video.getWindowFlags(self.window) & sdl.video.SDL_WINDOW_MAXIMIZED != 0;
+        const maximized = self.window.getFlags().maximized;
 
         for (0..3) |index| {
             const rect = chrome_module.controlRect(self.width, index);
@@ -662,11 +638,11 @@ pub const App = struct {
 
             if (clicked) {
                 switch (index) {
-                    0 => _ = sdl.video.minimizeWindow(self.window),
+                    0 => self.window.minimize() catch {},
                     1 => if (maximized) {
-                        _ = sdl.video.restoreWindow(self.window);
+                        self.window.restore() catch {};
                     } else {
-                        _ = sdl.video.maximizeWindow(self.window);
+                        self.window.maximize() catch {};
                     },
                     else => self.quit = true,
                 }
@@ -1075,7 +1051,7 @@ pub const App = struct {
     fn drawToast(self: *App) void {
         if (self.toast.length == 0) return;
 
-        const now = sdl.time.getTicks();
+        const now = sdl.timer.getMillisecondsSinceInit();
         if (now >= self.toast_until) return;
 
         const r = self.renderer;
@@ -1129,7 +1105,7 @@ pub const App = struct {
         r.shadow(dialog, theme.radius_large, 24, 10, fade(p.shadow, 1.6));
         r.border(dialog, p.popover, p.border, theme.radius_large);
 
-        const degrees: f64 = @floatFromInt(sdl.time.getTicks() % 1000 * 360 / 1000);
+        const degrees: f64 = @floatFromInt(sdl.timer.getMillisecondsSinceInit() % 1000 * 360 / 1000);
         r.rotatedIcon(.loader, .{ .x = dialog.x + 24, .y = dialog.y + 26, .w = 20, .h = 20 }, p.brand, degrees);
         r.text(self.busy_message.slice(), dialog.x + 54, dialog.y + 24, p.popover_foreground, .strong);
         r.text("Rendering charts and writing the workbook.", dialog.x + 24, dialog.y + 58, p.muted_foreground, .small);
@@ -1153,17 +1129,17 @@ const Popup = struct {
     scroll: f32 = 0,
 };
 
-fn pickedFile(user_data: ?*anyopaque, paths: ?[*]const ?[*:0]const u8, _: c_int) callconv(.c) void {
-    const self: *App = @ptrCast(@alignCast(user_data.?));
-
-    if (paths) |list| {
-        if (list[0]) |path| {
-            self.dialog_path.set(std.mem.span(path));
-            self.dialog_state.store(2, .release);
-            return;
+fn pickedFile(self_optional: ?*App, paths: ?[]const [*:0]const u8, _: ?usize, failed: bool) void {
+    const self = self_optional orelse return;
+    if (!failed) {
+        if (paths) |list| {
+            if (list.len > 0) {
+                self.dialog_path.set(std.mem.span(list[0]));
+                self.dialog_state.store(2, .release);
+                return;
+            }
         }
     }
-
     self.dialog_state.store(0, .release);
 }
 

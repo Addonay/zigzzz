@@ -36,9 +36,17 @@
             .url = "git+https://github.com/Addonay/zlay.git#d6112faa78b5750a3817b927b7d48bb562634304",
             .hash = "zlay-0.1.0-TRqBosOgAwBpF1ZBaJs8oQu4kRrM5dAPdfPMOGdTRRGr",
         },
-        .zsdl = .{
-            .url = "git+https://github.com/felixuxx/zsdl3.git#3659117a955d175c680add0ffaeeeb43e2537cfa",
-            .hash = "zsdl3-0.0.0-l0pNpNL6BwCqFiKwNGiUePJa60agOcirrIiAgYDrYVLW",
+        .sdl3 = .{
+            .url = "git+https://codeberg.org/7Games/zig-sdl3.git#666331118c8f7d8a03ea633d79a343c34dc32b84",
+            .hash = "sdl3-0.2.3-NmT1Q1QDKgACd5t_PNSG08lcOCX25qaRYZjUmXPTVBY_",
+        },
+        .freetype = .{
+            .url = "git+https://github.com/david-vanderson/freetype#4938878b58e8481bc11ac52d6fe10a7cf6c3c7d5",
+            .hash = "freetype-2.14.1-alzUkceCqgDRZIP8PnxnNCd8jwfbwY0k1VhlTV2O5Ivo",
+        },
+        .expat = .{
+            .url = "git+https://github.com/allyourcodebase/libexpat#bc1c381c6c175e2e506b6a1c3c23e01d0795fb66",
+            .hash = "libexpat-2.9.0-y_akI39BAABNZVf6gspukf37qEjDz6qKMmV15ca9YMfg",
         },
     },
     .paths = .{
@@ -46,6 +54,7 @@
         "build.zig.zon",
         "src",
         "assets",
+        "tools",
         "README.md",
     },
 }

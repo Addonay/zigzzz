@@ -1,237 +1,49 @@
 [
-  {
-    "name": "2G RNA",
-    "operator": ">",
-    "value": 99.93
-  },
-  {
-    "name": "3G RNA",
-    "operator": ">",
-    "value": 99.93
-  },
-  {
-    "name": "4G RNA",
-    "operator": ">",
-    "value": 99.93
-  },
-  {
-    "name": "5G RNA",
-    "operator": ">",
-    "value": 99.93
-  },
-  {
-    "name": "2G DCR",
-    "operator": "<=",
-    "value": 0.3
-  },
-  {
-    "name": "3G CS DROP",
-    "operator": "<=",
-    "value": 0.15
-  },
-  {
-    "name": "3G PS/HS DROP",
-    "operator": "<=",
-    "value": 0.3
-  },
-  {
-    "name": "Service Drop Rate (All) (4G)",
-    "operator": "<=",
-    "value": 0.1
-  },
-  {
-    "name": "VoLTE Drop Rate (QC1)",
-    "operator": "<=",
-    "value": 0.13
-  },
-  {
-    "name": "5G Session Drop Rate",
-    "operator": "<=",
-    "value": 0.15
-  },
-  {
-    "name": "2G Utilization",
-    "operator": "<=",
-    "value": 80
-  },
-  {
-    "name": "3G Utilization",
-    "operator": "<=",
-    "value": 80
-  },
-  {
-    "name": "4G Utilization",
-    "operator": "<=",
-    "value": 80
-  },
-  {
-    "name": "5G Utilization",
-    "operator": "<=",
-    "value": 80
-  },
-  {
-    "name": "2G CSSR",
-    "operator": ">=",
-    "value": 99.5
-  },
-  {
-    "name": "3G CSSR",
-    "operator": ">=",
-    "value": 99.5
-  },
-  {
-    "name": "3G HS/PS CSSR",
-    "operator": ">=",
-    "value": 99
-  },
-  {
-    "name": "VoLTE CSSR",
-    "operator": ">=",
-    "value": 99.5
-  },
-  {
-    "name": "2G PSR",
-    "operator": ">=",
-    "value": 90
-  },
-  {
-    "name": "3G PSR",
-    "operator": ">=",
-    "value": 90
-  },
-  {
-    "name": "4G PSR",
-    "operator": ">=",
-    "value": 90
-  },
-  {
-    "name": "CSFB success rate (4G)",
-    "operator": ">=",
-    "value": 99.9
-  },
-  {
-    "name": "Session Success Rate (4G)",
-    "operator": ">=",
-    "value": 99.5
-  },
-  {
-    "name": "ERAB Setup Success Rate (QCI 1) -VoLTE",
-    "operator": ">=",
-    "value": 99.5
-  },
-  {
-    "name": "SRVCC Success Rate (3G & 2G)",
-    "operator": ">=",
-    "value": 97.5
-  },
-  {
-    "name": "SgNb Addition Success Rate",
-    "operator": ">=",
-    "value": 99.5
-  },
-  {
-    "name": "3G Throughput",
-    "operator": ">=",
-    "value": 2500
-  },
-  {
-    "name": "4G Throughput(DL_User_throughput) (Mbps)",
-    "operator": ">=",
-    "value": 10
-  },
-  {
-    "name": "5G DL Throughput (Mbps)",
-    "operator": ">=",
-    "value": 20
-  },
-  {
-    "name": "5G UL Throughput (Mbps)",
-    "operator": ">=",
-    "value": 5
-  },
-  {
-    "name": "4G CQI",
-    "operator": ">=",
-    "value": 8
-  },
-  {
-    "name": "5G CQI",
-    "operator": ">=",
-    "value": 8
-  },
-  {
-    "name": "2G_TCH_Availability",
-    "operator": ">=",
-    "value": 99.5
-  },
-  {
-    "name": "2G_TCH_Blocking",
-    "operator": "<=",
-    "value": 0.15
-  },
-  {
-    "name": "2G voice Data integrity(%)",
-    "operator": ">=",
-    "value": 99.9
-  },
-  {
-    "name": "3G CS Data integrity(%)",
-    "operator": ">=",
-    "value": 99.9
-  },
-  {
-    "name": "3G PS Data integrity(%)",
-    "operator": ">=",
-    "value": 99.9
-  },
-  {
-    "name": "4G Data integrity(%)",
-    "operator": ">=",
-    "value": 99.9
-  },
-  {
-    "name": "5G Data integrity(%)",
-    "operator": ">=",
-    "value": 99.9
-  },
-  {
-    "name": "% of cells having 3G user throughput greater than 1000kbps",
-    "operator": ">=",
-    "value": 85
-  },
-  {
-    "name": "% of cells having 4G user throughput greater than 5Mbps",
-    "operator": ">=",
-    "value": 90
-  },
-  {
-    "name": "% of cells having 5G user throughput (>=20Mbps)",
-    "operator": ">=",
-    "value": 70
-  },
-  {
-    "name": "% of cells with 2G RX Qual Samples 0-5(>=90%)",
-    "operator": ">=",
-    "value": 90
-  },
-  {
-    "name": "5G Latency",
-    "operator": "<",
-    "value": 30
-  },
-  {
-    "name": "5G Packet Loss",
-    "operator": "<",
-    "value": 0.01
-  },
-  {
-    "name": "Percentage_Cells_with_4G_User_Throughput_less_than_3Mbps",
-    "operator": "<",
-    "value": 5
-  },
-  {
-    "name": "SD Blocking",
-    "operator": "<",
-    "value": 0.3
-  }
+  { "name": "2G RNA",                                                       "operator": ">",    "value": 99.93 },
+  { "name": "3G RNA",                                                       "operator": ">",    "value": 99.93 },
+  { "name": "4G RNA",                                                       "operator": ">",    "value": 99.93 },
+  { "name": "5G RNA",                                                       "operator": ">",    "value": 99.93 },
+  { "name": "2G DCR",                                                       "operator": "<=",   "value": 0.3   },
+  { "name": "3G CS DROP",                                                   "operator": "<=",   "value": 0.15  },
+  { "name": "3G PS/HS DROP",                                                "operator": "<=",   "value": 0.3   },
+  { "name": "Service Drop Rate (All) (4G)",                                 "operator": "<=",   "value": 0.1   },
+  { "name": "VoLTE Drop Rate (QC1)",                                        "operator": "<=",   "value": 0.13  },
+  { "name": "5G Session Drop Rate",                                         "operator": "<=",   "value": 0.15  },
+  { "name": "2G Utilization",                                               "operator": "<=",   "value": 80    },
+  { "name": "3G Utilization",                                               "operator": "<=",   "value": 80    },
+  { "name": "4G Utilization",                                               "operator": "<=",   "value": 80    },
+  { "name": "5G Utilization",                                               "operator": "<=",   "value": 80    },
+  { "name": "2G CSSR",                                                      "operator": ">=",   "value": 99.5  },
+  { "name": "3G CSSR",                                                      "operator": ">=",   "value": 99.5  },
+  { "name": "3G HS/PS CSSR",                                                "operator": ">=",   "value": 99    },
+  { "name": "VoLTE CSSR",                                                   "operator": ">=",   "value": 99.5  },
+  { "name": "2G PSR",                                                       "operator": ">=",   "value": 90    },
+  { "name": "3G PSR",                                                       "operator": ">=",   "value": 90    },
+  { "name": "4G PSR",                                                       "operator": ">=",   "value": 90    },
+  { "name": "CSFB success rate (4G)",                                       "operator": ">=",   "value": 99.9  },
+  { "name": "Session Success Rate (4G)",                                    "operator": ">=",   "value": 99.5  },
+  { "name": "ERAB Setup Success Rate (QCI 1) -VoLTE",                       "operator": ">=",   "value": 99.5  },
+  { "name": "SRVCC Success Rate (3G & 2G)",                                 "operator": ">=",   "value": 97.5  },
+  { "name": "SgNb Addition Success Rate",                                   "operator": ">=",   "value": 99.5  },
+  { "name": "3G Throughput",                                                "operator": ">=",   "value": 2500  },
+  { "name": "4G Throughput(DL_User_throughput) (Mbps)",                     "operator": ">=",   "value": 10    },
+  { "name": "5G DL Throughput (Mbps)",                                      "operator": ">=",   "value": 20    },
+  { "name": "5G UL Throughput (Mbps)",                                      "operator": ">=",   "value": 5     },
+  { "name": "4G CQI",                                                       "operator": ">=",   "value": 8     },
+  { "name": "5G CQI",                                                       "operator": ">=",   "value": 8     },
+  { "name": "2G_TCH_Availability",                                          "operator": ">=",   "value": 99.5  },
+  { "name": "2G_TCH_Blocking",                                              "operator": "<=",   "value": 0.15  },
+  { "name": "2G voice Data integrity(%)",                                   "operator": ">=",   "value": 99.9  },
+  { "name": "3G CS Data integrity(%)",                                      "operator": ">=",   "value": 99.9  },
+  { "name": "3G PS Data integrity(%)",                                      "operator": ">=",   "value": 99.9  },
+  { "name": "4G Data integrity(%)",                                         "operator": ">=",   "value": 99.9  },
+  { "name": "5G Data integrity(%)",                                         "operator": ">=",   "value": 99.9  },
+  { "name": "% of cells having 3G user throughput greater than 1000kbps",   "operator": ">=",   "value": 85    },
+  { "name": "% of cells having 4G user throughput greater than 5Mbps",      "operator": ">=",   "value": 90    },
+  { "name": "% of cells having 5G user throughput (>=20Mbps)",              "operator": ">=",   "value": 70    },
+  { "name": "% of cells with 2G RX Qual Samples 0-5(>=90%)",                "operator": ">=",   "value": 90    },
+  { "name": "5G Latency",                                                   "operator": "<",    "value": 30    },
+  { "name": "5G Packet Loss",                                               "operator": "<",    "value": 0.01  },
+  { "name": "Percentage_Cells_with_4G_User_Throughput_less_than_3Mbps",     "operator": "<",    "value": 5     },
+  { "name": "SD Blocking",                                                  "operator": "<",    "value": 0.3   }
 ]

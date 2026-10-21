@@ -1,4 +1,4 @@
-//! SDL rendering is exclusively through zsdl3. FreeType supplies coverage
+//! SDL rendering uses zig-sdl3's Zig API. FreeType supplies coverage
 //! bitmaps; the app owns the atlases and presents a supersampled frame.
 //!
 //! Everything here draws in logical (window) coordinates. The frame is
@@ -6,12 +6,11 @@
 //! is presented, which keeps curves, text, and rounded corners smooth.
 
 const std = @import("std");
-const sdl = @import("zsdl3");
+const sdl = @import("sdl3");
 const ft = @import("native");
 const assets = @import("assets");
 const geo = @import("geometry.zig");
 
-const api = sdl.render;
 const Rect = geo.Rect;
 const Color = geo.Color;
 const f = geo.f;
@@ -120,7 +119,7 @@ const Glyph = struct {
 };
 
 const Font = struct {
-    texture: *api.SDL_Texture,
+    texture: sdl.render.Texture,
     glyphs: [256]Glyph,
     size: f32,
     baseline: f32,
@@ -130,7 +129,7 @@ const ShadowKey = struct { radius: u8, blur: u8 };
 
 const ShadowEntry = struct {
     key: ShadowKey,
-    texture: *api.SDL_Texture,
+    texture: sdl.render.Texture,
     edge: f32,
 };
 
@@ -138,37 +137,37 @@ const icon_levels = [_]usize{ 128, 64, 32 };
 
 pub const Renderer = struct {
     allocator: std.mem.Allocator,
-    window: *sdl.video.SDL_Window,
-    handle: *api.SDL_Renderer,
+    window: sdl.video.Window,
+    handle: sdl.render.Renderer,
     library: ft.FT_Library,
 
     fonts: [role_count]Font = undefined,
-    icons: [assets.icons.len][icon_levels.len]*api.SDL_Texture = undefined,
+    icons: [assets.icons.len][icon_levels.len]sdl.render.Texture = undefined,
 
-    rounded: [33]?*api.SDL_Texture = @splat(null),
-    rings: [33]?*api.SDL_Texture = @splat(null),
+    rounded: [33]?sdl.render.Texture = @splat(null),
+    rings: [33]?sdl.render.Texture = @splat(null),
     shadows: [32]?ShadowEntry = @splat(null),
 
-    target: ?*api.SDL_Texture = null,
+    target: ?sdl.render.Texture = null,
     target_width: c_int = 0,
     target_height: c_int = 0,
-    blur_levels: [5]?*api.SDL_Texture = @splat(null),
+    blur_levels: [5]?sdl.render.Texture = @splat(null),
 
     logical_width: f32 = 1,
     logical_height: f32 = 1,
     clip_rect: ?Rect = null,
     vsync: bool = false,
 
-    vertices: std.ArrayList(api.SDL_Vertex) = .empty,
+    vertices: std.ArrayList(sdl.render.Vertex) = .empty,
     indices: std.ArrayList(c_int) = .empty,
 
-    pub fn init(allocator: std.mem.Allocator, window: *sdl.video.SDL_Window) !Renderer {
+    pub fn init(allocator: std.mem.Allocator, window: sdl.video.Window) !Renderer {
         var library: ft.FT_Library = null;
         if (ft.FT_Init_FreeType(&library) != 0) return error.FontLibrary;
         errdefer _ = ft.FT_Done_FreeType(library);
 
-        const handle = api.createRenderer(window, null) orelse return error.Renderer;
-        errdefer api.destroyRenderer(handle);
+        const handle = try sdl.render.Renderer.init(window, null);
+        errdefer handle.deinit();
 
         var self = Renderer{
             .allocator = allocator,
@@ -177,47 +176,47 @@ pub const Renderer = struct {
             .library = library,
         };
 
-        self.vsync = api.setRenderVSync(handle, 1);
-        _ = api.setRenderDrawBlendMode(handle, sdl.pixels.SDL_BLENDMODE_BLEND);
+        self.vsync = if (handle.setVSync(.{ .on_each_num_refresh = 1 })) true else |_| false;
+        try handle.setDrawBlendMode(.blend);
 
         self.fonts = try self.bakeAll(16);
 
-        for (assets.icons, 0..) |pixels, index| {
-            self.icons[index] = try self.iconMips(pixels);
+        for (assets.icons, 0..) |svg, index| {
+            self.icons[index] = try self.iconMips(svg);
         }
 
         return self;
     }
 
     pub fn deinit(self: *Renderer) void {
-        for (self.fonts) |font| api.destroyTexture(font.texture);
+        for (self.fonts) |font| font.texture.deinit();
 
         for (self.icons) |levels| {
-            for (levels) |texture_handle| api.destroyTexture(texture_handle);
+            for (levels) |texture_handle| texture_handle.deinit();
         }
 
         for (self.rounded) |optional| {
-            if (optional) |texture_handle| api.destroyTexture(texture_handle);
+            if (optional) |texture_handle| texture_handle.deinit();
         }
 
         for (self.rings) |optional| {
-            if (optional) |texture_handle| api.destroyTexture(texture_handle);
+            if (optional) |texture_handle| texture_handle.deinit();
         }
 
         for (self.shadows) |optional| {
-            if (optional) |entry| api.destroyTexture(entry.texture);
+            if (optional) |entry| entry.texture.deinit();
         }
 
         for (self.blur_levels) |optional| {
-            if (optional) |texture_handle| api.destroyTexture(texture_handle);
+            if (optional) |texture_handle| texture_handle.deinit();
         }
 
-        if (self.target) |texture_handle| api.destroyTexture(texture_handle);
+        if (self.target) |texture_handle| texture_handle.deinit();
 
         self.vertices.deinit(self.allocator);
         self.indices.deinit(self.allocator);
 
-        api.destroyRenderer(self.handle);
+        self.handle.deinit();
         _ = ft.FT_Done_FreeType(self.library);
     }
 
@@ -228,14 +227,14 @@ pub const Renderer = struct {
     pub fn setTextSize(self: *Renderer, size: u32) !void {
         const fonts = try self.bakeAll(size);
 
-        for (self.fonts) |font| api.destroyTexture(font.texture);
+        for (self.fonts) |font| font.texture.deinit();
         self.fonts = fonts;
     }
 
     fn bakeAll(self: *Renderer, size: u32) ![role_count]Font {
         var fonts: [role_count]Font = undefined;
         var ready: usize = 0;
-        errdefer for (fonts[0..ready]) |font| api.destroyTexture(font.texture);
+        errdefer for (fonts[0..ready]) |font| font.texture.deinit();
 
         const scale = f(size) / 16;
 
@@ -248,31 +247,24 @@ pub const Renderer = struct {
         return fonts;
     }
 
-    fn texture(self: *Renderer, pixels: []const u8, width: usize, height: usize) !*api.SDL_Texture {
-        const result = api.createTexture(
-            self.handle,
-            sdl.pixels.SDL_PIXELFORMAT_RGBA32,
-            api.SDL_TEXTUREACCESS_STATIC,
-            @intCast(width),
-            @intCast(height),
-        ) orelse return error.Texture;
-        errdefer api.destroyTexture(result);
+    fn texture(self: *Renderer, pixels: []const u8, width: usize, height: usize) !sdl.render.Texture {
+        const result = try self.handle.createTexture(.array_rgba_32, .static, width, height);
+        errdefer result.deinit();
 
-        if (!api.updateTexture(result, null, pixels.ptr, @intCast(width * 4))) return error.Texture;
+        try result.update(null, pixels.ptr, width * 4);
 
-        _ = api.setTextureBlendMode(result, sdl.pixels.SDL_BLENDMODE_BLEND);
-        _ = api.setTextureScaleMode(result, .SDL_SCALEMODE_LINEAR);
+        try result.setBlendMode(.blend);
+        try result.setScaleMode(.linear);
         return result;
     }
 
-    /// Box-filter the 128 px mask down to 64 and 32 px so small icons are
-    /// minified from a nearby level instead of aliasing.
-    fn iconMips(self: *Renderer, pixels: []const u8) ![icon_levels.len]*api.SDL_Texture {
-        var levels: [icon_levels.len]*api.SDL_Texture = undefined;
+    /// Rasterize the embedded SVG once, then box-filter smaller cached levels.
+    fn iconMips(self: *Renderer, svg: []const u8) ![icon_levels.len]sdl.render.Texture {
+        var levels: [icon_levels.len]sdl.render.Texture = undefined;
         var ready: usize = 0;
-        errdefer for (levels[0..ready]) |level| api.destroyTexture(level);
+        errdefer for (levels[0..ready]) |level| level.deinit();
 
-        var current = try self.allocator.dupe(u8, pixels);
+        var current = try rasterizeIcon(self.allocator, svg, icon_levels[0]);
         defer self.allocator.free(current);
 
         for (icon_levels, 0..) |side, index| {
@@ -395,22 +387,20 @@ pub const Renderer = struct {
     // ── Frame ──────────────────────────────────────────────────────────
 
     pub fn begin(self: *Renderer, width: f32, height: f32, background: Color) !void {
-        var output_width: c_int = 0;
-        var output_height: c_int = 0;
-        _ = api.getRenderOutputSize(self.handle, &output_width, &output_height);
+        const output_width, const output_height = try self.handle.getOutputSize();
 
-        const target_width = output_width * 2;
-        const target_height = output_height * 2;
+        const target_width: c_int = @intCast(output_width * 2);
+        const target_height: c_int = @intCast(output_height * 2);
 
         if (self.target == null or self.target_width != target_width or self.target_height != target_height) {
-            if (self.target) |old| api.destroyTexture(old);
+            if (self.target) |old| old.deinit();
 
             self.target = try self.targetTexture(target_width, target_height);
             self.target_width = target_width;
             self.target_height = target_height;
 
             for (&self.blur_levels) |*level| {
-                if (level.*) |old| api.destroyTexture(old);
+                if (level.*) |old| old.deinit();
                 level.* = null;
             }
         }
@@ -418,34 +408,29 @@ pub const Renderer = struct {
         self.logical_width = width;
         self.logical_height = height;
 
-        _ = api.setRenderTarget(self.handle, self.target);
-        _ = api.setRenderScale(self.handle, f(target_width) / width, f(target_height) / height);
+        try self.handle.setTarget(self.target);
+        try self.handle.setScale(f(target_width) / width, f(target_height) / height);
 
         self.unclip();
         self.color(background);
-        _ = api.renderClear(self.handle);
+        try self.handle.clear();
     }
 
     pub fn finish(self: *Renderer) void {
         self.unclip();
 
-        _ = api.setRenderTarget(self.handle, null);
-        _ = api.setRenderScale(self.handle, 1, 1);
-        _ = api.renderTexture(self.handle, self.target.?, null, null);
-        _ = api.renderPresent(self.handle);
+        self.handle.setTarget(null) catch {};
+        self.handle.setScale(1, 1) catch {};
+        self.handle.renderTexture(self.target.?, null, null) catch {};
+        self.handle.present() catch {};
     }
 
-    fn targetTexture(self: *Renderer, width: c_int, height: c_int) !*api.SDL_Texture {
-        const result = api.createTexture(
-            self.handle,
-            sdl.pixels.SDL_PIXELFORMAT_RGBA32,
-            api.SDL_TEXTUREACCESS_TARGET,
-            @max(1, width),
-            @max(1, height),
-        ) orelse return error.RenderTarget;
+    fn targetTexture(self: *Renderer, width: c_int, height: c_int) !sdl.render.Texture {
+        const result = try self.handle.createTexture(.array_rgba_32, .target, @intCast(@max(1, width)), @intCast(@max(1, height)));
+        errdefer result.deinit();
 
-        _ = api.setTextureScaleMode(result, .SDL_SCALEMODE_LINEAR);
-        _ = api.setTextureBlendMode(result, sdl.pixels.SDL_BLENDMODE_NONE);
+        try result.setScaleMode(.linear);
+        try result.setBlendMode(.none);
         return result;
     }
 
@@ -474,9 +459,9 @@ pub const Renderer = struct {
         var source = target;
 
         for (self.blur_levels, sizes) |level, size| {
-            _ = api.setRenderTarget(self.handle, level.?);
-            _ = api.setRenderScale(self.handle, 1, 1);
-            _ = api.setRenderClipRect(self.handle, null);
+            self.handle.setTarget(level.?) catch {};
+            self.handle.setScale(1, 1) catch {};
+            self.handle.setClipRect(null) catch {};
 
             self.filterInto(source, size[0], size[1], 0.25);
             source = level.?;
@@ -486,21 +471,17 @@ pub const Renderer = struct {
         var index: usize = self.blur_levels.len - 1;
 
         while (index > 0) : (index -= 1) {
-            _ = api.setRenderTarget(self.handle, self.blur_levels[index - 1].?);
+            self.handle.setTarget(self.blur_levels[index - 1].?) catch {};
             self.filterInto(self.blur_levels[index].?, sizes[index - 1][0], sizes[index - 1][1], 1);
         }
 
-        _ = api.setRenderTarget(self.handle, target);
-        _ = api.setRenderScale(self.handle, 1, 1);
-        _ = api.setRenderClipRect(self.handle, null);
+        self.handle.setTarget(target) catch {};
+        self.handle.setScale(1, 1) catch {};
+        self.handle.setClipRect(null) catch {};
 
         self.filterInto(self.blur_levels[0].?, f(self.target_width), f(self.target_height), 1);
 
-        _ = api.setRenderScale(
-            self.handle,
-            f(self.target_width) / self.logical_width,
-            f(self.target_height) / self.logical_height,
-        );
+        self.handle.setScale(f(self.target_width) / self.logical_width, f(self.target_height) / self.logical_height) catch {};
 
         if (previous_clip) |rect| self.clip(rect) else self.unclip();
     }
@@ -510,31 +491,31 @@ pub const Renderer = struct {
     /// texel this is a 2×2 box (going down) or tent (going up) filter,
     /// even on renderers that sample render targets with nearest-neighbour
     /// filtering.
-    fn filterInto(self: *Renderer, source: *api.SDL_Texture, width: f32, height: f32, spread: f32) void {
+    fn filterInto(self: *Renderer, source: sdl.render.Texture, width: f32, height: f32, spread: f32) void {
         const offsets = [_][2]f32{ .{ -1, -1 }, .{ 1, -1 }, .{ -1, 1 }, .{ 1, 1 } };
 
         // Start from black so edge pixels missed by an offset copy never
         // keep stale content.
         self.color(.{ 0, 0, 0, 255 });
-        _ = api.renderClear(self.handle);
+        self.handle.clear() catch {};
 
-        _ = api.setTextureColorMod(source, 64, 64, 64);
-        _ = api.setTextureAlphaMod(source, 255);
-        _ = api.setTextureBlendMode(source, sdl.pixels.SDL_BLENDMODE_ADD);
+        source.setColorMod(64, 64, 64) catch {};
+        source.setAlphaMod(255) catch {};
+        source.setBlendMode(.add) catch {};
 
         for (offsets) |offset| {
             const destination = (Rect{ .x = offset[0] * spread, .y = offset[1] * spread, .w = width, .h = height }).native();
-            _ = api.renderTexture(self.handle, source, null, &destination);
+            self.handle.renderTexture(source, null, destination) catch {};
         }
 
-        _ = api.setTextureColorMod(source, 255, 255, 255);
-        _ = api.setTextureBlendMode(source, sdl.pixels.SDL_BLENDMODE_NONE);
+        source.setColorMod(255, 255, 255) catch {};
+        source.setBlendMode(.none) catch {};
     }
 
     // ── Shapes ─────────────────────────────────────────────────────────
 
     pub fn color(self: *Renderer, value: Color) void {
-        _ = api.setRenderDrawColor(self.handle, value[0], value[1], value[2], value[3]);
+        self.handle.setDrawColor(.{ .r = value[0], .g = value[1], .b = value[2], .a = value[3] }) catch {};
     }
 
     /// Filled rectangle with optionally rounded corners (radius ≤ 32).
@@ -544,7 +525,7 @@ pub const Renderer = struct {
 
         if (radius <= 0.5) {
             self.color(value);
-            _ = api.renderFillRect(self.handle, &destination);
+            self.handle.renderFillRect(destination) catch {};
             return;
         }
 
@@ -553,7 +534,7 @@ pub const Renderer = struct {
         const edge = f(size);
 
         self.tint(texture_handle, value);
-        _ = api.renderTexture9Grid(self.handle, texture_handle, null, edge * 4, edge * 4, edge * 4, edge * 4, 0.25, &destination);
+        self.handle.renderTexture9Grid(texture_handle, null, edge * 4, edge * 4, edge * 4, edge * 4, 0.25, destination) catch {};
     }
 
     /// A one pixel rounded outline with a transparent centre.
@@ -566,7 +547,7 @@ pub const Renderer = struct {
         const destination = rect.native();
 
         self.tint(texture_handle, value);
-        _ = api.renderTexture9Grid(self.handle, texture_handle, null, edge * 4, edge * 4, edge * 4, edge * 4, 0.25, &destination);
+        self.handle.renderTexture9Grid(texture_handle, null, edge * 4, edge * 4, edge * 4, edge * 4, 0.25, destination) catch {};
     }
 
     /// Filled rectangle with a one pixel stroke drawn inside its bounds.
@@ -586,7 +567,7 @@ pub const Renderer = struct {
 
     /// Rounded-rectangle masks rendered at four times their logical size.
     /// The 9-grid scale of 0.25 maps them back to logical units.
-    fn cornerTexture(self: *Renderer, cache: *[33]?*api.SDL_Texture, size: usize, ring: bool) ?*api.SDL_Texture {
+    fn cornerTexture(self: *Renderer, cache: *[33]?sdl.render.Texture, size: usize, ring: bool) ?sdl.render.Texture {
         if (cache[size]) |existing| return existing;
 
         const side = (size * 2 + 4) * 4;
@@ -647,7 +628,7 @@ pub const Renderer = struct {
         }).native();
 
         self.tint(entry.texture, value);
-        _ = api.renderTexture9Grid(self.handle, entry.texture, null, entry.edge * 2, entry.edge * 2, entry.edge * 2, entry.edge * 2, 0.5, &destination);
+        self.handle.renderTexture9Grid(entry.texture, null, entry.edge * 2, entry.edge * 2, entry.edge * 2, entry.edge * 2, 0.5, destination) catch {};
     }
 
     fn shadowTexture(self: *Renderer, key: ShadowKey) ?ShadowEntry {
@@ -729,7 +710,7 @@ pub const Renderer = struct {
         const outer = width / 2 + 0.45;
         const offsets = [_]f32{ -outer, -core, core, outer };
 
-        const rgba = api.SDL_FColor{
+        const rgba = sdl.pixels.FColor{
             .r = f(value[0]) / 255,
             .g = f(value[1]) / 255,
             .b = f(value[2]) / 255,
@@ -759,20 +740,13 @@ pub const Renderer = struct {
                 const k: c_int = @intCast(band);
 
                 self.indices.appendSlice(self.allocator, &.{
-                    a + k, b + k, a + k + 1,
+                    a + k, b + k,     a + k + 1,
                     b + k, b + k + 1, a + k + 1,
                 }) catch return;
             }
         }
 
-        _ = api.renderGeometry(
-            self.handle,
-            null,
-            self.vertices.items.ptr,
-            @intCast(self.vertices.items.len),
-            self.indices.items.ptr,
-            @intCast(self.indices.items.len),
-        );
+        self.handle.renderGeometry(null, self.vertices.items, self.indices.items) catch {};
     }
 
     /// Unit normal at a polyline vertex, mitred between the neighbouring
@@ -912,14 +886,14 @@ pub const Renderer = struct {
     }
 
     pub fn triangle(self: *Renderer, a: Point, b: Point, c: Point, value: Color) void {
-        const rgba = api.SDL_FColor{
+        const rgba = sdl.pixels.FColor{
             .r = f(value[0]) / 255,
             .g = f(value[1]) / 255,
             .b = f(value[2]) / 255,
             .a = f(value[3]) / 255,
         };
 
-        var vertices: [3]api.SDL_Vertex = undefined;
+        var vertices: [3]sdl.render.Vertex = undefined;
 
         for ([_]Point{ a, b, c }, 0..) |point, index| {
             vertices[index] = .{
@@ -929,13 +903,13 @@ pub const Renderer = struct {
             };
         }
 
-        _ = api.renderGeometry(self.handle, null, &vertices, 3, null, 0);
+        self.handle.renderGeometry(null, &vertices, null) catch {};
     }
 
     // ── Text ───────────────────────────────────────────────────────────
 
     fn fontFor(self: *const Renderer, role: FontRole) *const Font {
-        return &self.fonts[@intFromEnum(role)];
+        return &self.fonts[@backingInt(role)];
     }
 
     pub fn fontSize(self: *const Renderer, role: FontRole) f32 {
@@ -989,7 +963,7 @@ pub const Renderer = struct {
                     .h = glyph.source.h / oversample,
                 }).native();
 
-                _ = api.renderTexture(self.handle, selected.texture, &source, &destination);
+                self.handle.renderTexture(selected.texture, source, destination) catch {};
             }
 
             position += glyph.advance + tracking;
@@ -1083,7 +1057,7 @@ pub const Renderer = struct {
         self.tint(selected.texture, tint_color);
 
         const radians: f32 = @floatCast(degrees * std.math.pi / 180);
-        const center = api.SDL_FPoint{ .x = 0, .y = 0 };
+        const center = sdl.rect.FPoint{ .x = 0, .y = 0 };
         var position = -self.textWidth(value, role);
         var iterator = std.unicode.Utf8View.initUnchecked(value).iterator();
 
@@ -1103,20 +1077,18 @@ pub const Renderer = struct {
                 .h = glyph.source.h / oversample,
             }).native();
 
-            _ = api.renderTextureRotated(self.handle, selected.texture, &source, &destination, degrees, &center, .SDL_FLIP_NONE);
+            self.handle.renderTextureRotated(selected.texture, source, destination, degrees, center, .{}) catch {};
             position += glyph.advance;
         }
     }
 
     // ── Icons ──────────────────────────────────────────────────────────
 
-    fn iconTexture(self: *Renderer, which: Icon, size: f32) *api.SDL_Texture {
-        var scale_x: f32 = 1;
-        var scale_y: f32 = 1;
-        _ = api.getRenderScale(self.handle, &scale_x, &scale_y);
+    fn iconTexture(self: *Renderer, which: Icon, size: f32) sdl.render.Texture {
+        const scale_x, const scale_y = self.handle.getScale() catch .{ 1, 1 };
 
         const pixels = size * @max(scale_x, scale_y);
-        const levels = self.icons[@intFromEnum(which)];
+        const levels = self.icons[@backingInt(which)];
 
         if (pixels <= 40) return levels[2];
         if (pixels <= 80) return levels[1];
@@ -1128,7 +1100,7 @@ pub const Renderer = struct {
         const destination = rect.native();
 
         self.tint(handle, tint_color);
-        _ = api.renderTexture(self.handle, handle, null, &destination);
+        self.handle.renderTexture(handle, null, destination) catch {};
     }
 
     pub fn rotatedIcon(self: *Renderer, which: Icon, rect: Rect, tint_color: Color, degrees: f64) void {
@@ -1136,12 +1108,12 @@ pub const Renderer = struct {
         const destination = rect.native();
 
         self.tint(handle, tint_color);
-        _ = api.renderTextureRotated(self.handle, handle, null, &destination, degrees, null, .SDL_FLIP_NONE);
+        self.handle.renderTextureRotated(handle, null, destination, degrees, null, .{}) catch {};
     }
 
-    fn tint(_: *Renderer, texture_handle: *api.SDL_Texture, value: Color) void {
-        _ = api.setTextureColorMod(texture_handle, value[0], value[1], value[2]);
-        _ = api.setTextureAlphaMod(texture_handle, value[3]);
+    fn tint(_: *Renderer, texture_handle: sdl.render.Texture, value: Color) void {
+        texture_handle.setColorMod(value[0], value[1], value[2]) catch {};
+        texture_handle.setAlphaMod(value[3]) catch {};
     }
 
     // ── Clipping ───────────────────────────────────────────────────────
@@ -1149,14 +1121,14 @@ pub const Renderer = struct {
     pub fn clip(self: *Renderer, rect: Rect) void {
         self.clip_rect = rect;
 
-        const native_rect = sdl.pixels.SDL_Rect{
+        const native_rect = sdl.rect.IRect{
             .x = @intFromFloat(@floor(rect.x)),
             .y = @intFromFloat(@floor(rect.y)),
             .w = @intFromFloat(@ceil(@max(0, rect.w))),
             .h = @intFromFloat(@ceil(@max(0, rect.h))),
         };
 
-        _ = api.setRenderClipRect(self.handle, &native_rect);
+        self.handle.setClipRect(native_rect) catch {};
     }
 
     /// Clip to the intersection of `rect` and the current clip.
@@ -1172,7 +1144,7 @@ pub const Renderer = struct {
 
     pub fn unclip(self: *Renderer) void {
         self.clip_rect = null;
-        _ = api.setRenderClipRect(self.handle, null);
+        self.handle.setClipRect(null) catch {};
     }
 };
 
@@ -1202,4 +1174,75 @@ fn glyphIndex(codepoint: u21) usize {
     }
 
     return '?' - 32;
+}
+
+test "zig-sdl3 wrappers create textures and read rendered pixels" {
+    try sdl.init(.{});
+    defer sdl.shutdown();
+
+    const surface = try sdl.surface.Surface.init(16, 16, .array_rgba_32);
+    defer surface.deinit();
+    const renderer = try sdl.render.Renderer.initSoftwareRenderer(surface);
+    defer renderer.deinit();
+    const texture = try renderer.createTexture(.array_rgba_32, .static, 4, 4);
+    defer texture.deinit();
+
+    const expected = sdl.pixels.Color{ .r = 10, .g = 20, .b = 30, .a = 255 };
+    try renderer.setDrawColor(expected);
+    try renderer.clear();
+    const readback = try renderer.readPixels(null);
+    defer readback.deinit();
+    const actual = try readback.readPixel(0, 0);
+    try std.testing.expectEqual(expected.r, actual.r);
+    try std.testing.expectEqual(expected.g, actual.g);
+    try std.testing.expectEqual(expected.b, actual.b);
+    try std.testing.expectEqual(expected.a, actual.a);
+    try std.testing.expect(sdl.Version.get().value >= 3_004_018);
+}
+
+/// SDL_image handles SVG parsing/rasterization; the renderer tints white masks.
+fn rasterizeIcon(allocator: std.mem.Allocator, svg: []const u8, side: usize) ![]u8 {
+    const current_color = try std.mem.replaceOwned(u8, allocator, svg, "currentColor", "#ffffff");
+    defer allocator.free(current_color);
+    const white = try std.mem.replaceOwned(u8, allocator, current_color, "#DCE0E5", "#ffffff");
+    defer allocator.free(white);
+
+    const stream = try sdl.io_stream.Stream.initFromConstMem(white);
+    defer stream.deinit() catch {};
+    const surface = try sdl.image.loadSizedSvgIo(stream, side, side);
+    defer surface.deinit();
+    const converted = try surface.convertFormat(.array_rgba_32);
+    defer converted.deinit();
+    if (converted.getWidth() != side or converted.getHeight() != side) return error.InvalidIconDimensions;
+    const source = converted.getPixels() orelse return error.InvalidIconPixels;
+    const pitch = converted.getPitch();
+
+    const pixels = try allocator.alloc(u8, side * side * 4);
+    // White RGB, even outside the shape, keeps linear sampling free of dark fringes.
+    @memset(pixels, 255);
+    for (0..side) |y| {
+        for (0..side) |x| pixels[(y * side + x) * 4 + 3] = source[y * pitch + x * 4 + 3];
+    }
+    return pixels;
+}
+
+test "all embedded SVG icons rasterize to nonempty antialiased tint masks" {
+    try sdl.init(.{});
+    defer sdl.shutdown();
+    for (assets.icons) |svg| {
+        const pixels = try rasterizeIcon(std.testing.allocator, svg, 128);
+        defer std.testing.allocator.free(pixels);
+        var visible = false;
+        var transparent = false;
+        var antialiased = false;
+        for (0..128 * 128) |index| {
+            const at = index * 4;
+            try std.testing.expectEqualSlices(u8, &.{ 255, 255, 255 }, pixels[at..][0..3]);
+            const alpha = pixels[at + 3];
+            visible = visible or alpha > 0;
+            transparent = transparent or alpha == 0;
+            antialiased = antialiased or (alpha > 0 and alpha < 255);
+        }
+        try std.testing.expect(visible and transparent and antialiased);
+    }
 }

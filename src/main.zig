@@ -1,5 +1,5 @@
 const std = @import("std");
-const sdl = @import("zsdl3");
+const sdl = @import("sdl3");
 const App = @import("app.zig").App;
 const Renderer = @import("render.zig").Renderer;
 const chrome = @import("window.zig");
@@ -8,19 +8,17 @@ const exporter = @import("export.zig");
 const f = @import("geometry.zig").f;
 
 pub fn main(init: std.process.Init) !void {
-    if (!sdl.init(sdl.core.SDL_INIT_VIDEO)) return error.SdlInit;
-    defer sdl.quit();
+    try sdl.init(.{ .video = true });
+    defer sdl.shutdown();
 
-    const flags = sdl.video.SDL_WINDOW_BORDERLESS |
-        sdl.video.SDL_WINDOW_RESIZABLE |
-        sdl.video.SDL_WINDOW_HIGH_PIXEL_DENSITY |
-        sdl.video.SDL_WINDOW_TRANSPARENT;
-
-    const window = sdl.video.createWindow("Workspace", theme.initial_width, theme.initial_height, flags) orelse
-        return error.Window;
-    defer sdl.video.destroyWindow(window);
-
-    _ = sdl.video.setWindowMinimumSize(window, theme.minimum_width, theme.minimum_height);
+    const window = try sdl.video.Window.init("Workspace", theme.initial_width, theme.initial_height, .{
+        .borderless = true,
+        .resizable = true,
+        .high_pixel_density = true,
+        .transparent = true,
+    });
+    defer window.deinit();
+    try window.setMinimumSize(theme.minimum_width, theme.minimum_height);
 
     var renderer = try Renderer.init(init.gpa, window);
     defer renderer.deinit();
@@ -31,45 +29,40 @@ pub fn main(init: std.process.Init) !void {
     try app.init(init.gpa, init.io, window, &renderer);
     defer app.deinit();
 
-    _ = sdl.video.setWindowHitTest(window, chrome.hitTest, &app.chrome);
-    _ = sdl.input.startTextInput(window);
+    try window.setHitTest(chrome.Chrome, chrome.hitTest, &app.chrome);
+    try sdl.keyboard.startTextInput(window);
 
-    const arrow = sdl.input.createSystemCursor(.SDL_SYSTEM_CURSOR_DEFAULT);
-    const pointer = sdl.input.createSystemCursor(.SDL_SYSTEM_CURSOR_POINTER);
-    const text = sdl.input.createSystemCursor(.SDL_SYSTEM_CURSOR_TEXT);
-    const resize = sdl.input.createSystemCursor(.SDL_SYSTEM_CURSOR_EW_RESIZE);
-
+    const arrow = sdl.mouse.Cursor.initSystem(.default) catch null;
+    const pointer = sdl.mouse.Cursor.initSystem(.pointer) catch null;
+    const text = sdl.mouse.Cursor.initSystem(.text) catch null;
+    const resize = sdl.mouse.Cursor.initSystem(.east_west_resize) catch null;
     defer {
-        if (arrow) |cursor| sdl.input.destroyCursor(cursor);
-        if (pointer) |cursor| sdl.input.destroyCursor(cursor);
-        if (text) |cursor| sdl.input.destroyCursor(cursor);
-        if (resize) |cursor| sdl.input.destroyCursor(cursor);
+        if (arrow) |cursor| cursor.deinit();
+        if (pointer) |cursor| cursor.deinit();
+        if (text) |cursor| cursor.deinit();
+        if (resize) |cursor| cursor.deinit();
     }
 
     var shape: chrome.Shape = .{};
-    var previous = sdl.time.getTicks();
+    var previous = sdl.timer.getMillisecondsSinceInit();
 
     while (!app.quit) {
-        const now = sdl.time.getTicks();
+        const now = sdl.timer.getMillisecondsSinceInit();
         app.ui.delta_time = @min(0.05, f(now - previous) / 1000);
         previous = now;
 
         app.ui.resetEvents();
-        _ = sdl.input.getMouseState(&app.ui.mouse_x, &app.ui.mouse_y);
+        _, app.ui.mouse_x, app.ui.mouse_y = sdl.mouse.getState();
+        while (sdl.events.poll()) |event| app.event(event);
 
-        var event: sdl.core.SDL_Event = undefined;
-        while (sdl.events.pollEvent(&event)) app.event(event);
-
-        if (sdl.video.getWindowFlags(window) & sdl.video.SDL_WINDOW_MINIMIZED != 0) {
-            sdl.time.delay(40);
+        if (window.getFlags().minimized) {
+            sdl.timer.delayMilliseconds(40);
             continue;
         }
 
         try shape.update(init.gpa, window);
 
-        var width: c_int = 0;
-        var height: c_int = 0;
-        _ = sdl.video.getWindowSize(window, &width, &height);
+        const width, const height = try window.getSize();
 
         app.width = f(width);
         app.height = f(height);
@@ -100,13 +93,25 @@ pub fn main(init: std.process.Init) !void {
         else
             arrow;
 
-        _ = sdl.input.setCursor(cursor);
+        sdl.mouse.set(cursor) catch {};
 
         if (app.ui.released) app.ui.active = 0;
 
         if (!renderer.vsync) {
-            const elapsed = sdl.time.getTicks() - now;
-            if (elapsed < 16) sdl.time.delay(@intCast(16 - elapsed));
+            const elapsed = sdl.timer.getMillisecondsSinceInit() - now;
+            if (elapsed < 16) sdl.timer.delayMilliseconds(@intCast(16 - elapsed));
         }
     }
+}
+
+// Discover tests beside their implementations without running the application.
+test {
+    _ = @import("text.zig");
+    _ = @import("preferences.zig");
+    _ = @import("report.zig");
+    _ = @import("kml.zig");
+    _ = @import("png.zig");
+    _ = @import("render.zig");
+    _ = @import("ui.zig");
+    _ = @import("chart_image.zig");
 }

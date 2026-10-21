@@ -327,3 +327,53 @@ fn validateDays(value: []const u8) !void {
     const days = std.fmt.parseInt(u32, value, 10) catch return error.DaysMustBe7To180;
     if (days < 7 or days > 180) return error.DaysMustBe7To180;
 }
+
+test "threshold operators, disabled rules, and date precedence" {
+    const p = try std.testing.allocator.create(Preferences);
+    defer std.testing.allocator.destroy(p);
+    try p.defaults(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 47), p.rule_count);
+    const index = try p.include("Example");
+    p.rules[index].value.set("10");
+    try std.testing.expectEqual(@as(?bool, null), p.meets("Example", 20));
+    p.rules[index].enabled = true;
+    for ([_]bool{ true, true, false, false, true, false }, 0..) |expected, op| {
+        p.rules[index].operator = op;
+        try std.testing.expectEqual(@as(?bool, expected), p.meets("Example", 10));
+    }
+    p.global_days.set("30");
+    p.area_days[0] = .{ .name = .init("Nairobi"), .days = .init("60") };
+    p.area_count = 1;
+    p.kpi_days[0] = .{ .name = .init("Example"), .days = .init("90") };
+    p.kpi_count = 1;
+    try std.testing.expectEqual(@as(u32, 90), p.days("Nairobi", "Example"));
+    try std.testing.expectEqual(@as(u32, 60), p.days("Nairobi", "Other"));
+    try std.testing.expectEqual(@as(u32, 30), p.days("Other", "Other"));
+    p.font_size.set("25");
+    try std.testing.expectError(error.TextSizeMustBe12To24, p.validate());
+}
+
+test "settings survive an atomic round trip" {
+    const allocator = std.testing.allocator;
+    const p = try allocator.create(Preferences);
+    defer allocator.destroy(p);
+    try p.defaults(allocator);
+    p.dark = false;
+    p.groups[0] = .{ .name = .init("Radio") };
+    p.groups[0].members[0] = true;
+    p.group_count = 1;
+    p.overlays[0] = .{ .primary = 0 };
+    p.overlays[0].members[1] = true;
+    p.overlay_count = 1;
+    const path = "/tmp/zigzzz-test-settings.json";
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, path) catch {};
+    try p.save(allocator, std.testing.io, path);
+    const loaded = try allocator.create(Preferences);
+    defer allocator.destroy(loaded);
+    try loaded.load(allocator, std.testing.io, path);
+    try std.testing.expectEqual(false, loaded.dark);
+    try std.testing.expectEqual(p.rule_count, loaded.rule_count);
+    try std.testing.expectEqual(@as(usize, 1), loaded.group_count);
+    try std.testing.expect(loaded.groups[0].members[0]);
+    try std.testing.expect(loaded.overlays[0].members[1]);
+}

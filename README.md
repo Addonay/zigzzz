@@ -1,26 +1,39 @@
 # Workspace
 
 A native Zig workspace for QoS KPI analysis and KML generation. SDL is used
-through the pinned `zsdl3` bindings, zlay lays out the window shell, and
+through the pinned `7Games/zig-sdl3` bindings, zlay lays out the window shell, and
 FreeType renders the embedded fonts.
 
 ## Build and run
 
-Requires Zig **0.17.0**, SDL3, FreeType, and Expat development packages. On Fedora:
+Requires Zig **0.17.0**. SDL3, SDL_image, FreeType, and Expat are built from the pinned
+source packages in `build.zig.zon`, so no system development packages are needed.
+The native libraries are built once per target in ReleaseFast and reused by
+every application release mode.
 
 ```sh
-sudo dnf install SDL3-devel freetype-devel expat-devel
 zig build run
 ```
 
 `zig build` produces `zig-out/bin/zigzzz`. Use `zig build -Doptimize=safe` for an
 optimized `zig-out/bin/zigzzz-safe` with runtime safety checks; chart image
-exports are much faster in optimized builds. Dependencies are fetched from
-GitHub using the commits in `build.zig.zon`.
+exports are much faster in optimized builds.
 
-The build corrects one upstream binding typo (`SDL_RenderReadPixels` refers to
-`pixels.SDL_Surface` instead of `surface.SDL_Surface`) in generated build inputs.
-The fetched dependency is never edited, and the application declares no SDL ABI.
+The build targets the current host. The release names are `zigzzz` (debug),
+`zigzzz-small`, `zigzzz-fast`, and `zigzzz-safe`, selected with `-Doptimize`.
+
+`zig build size` reports those release binaries from the fixed
+`zig-out/windows/bin` and `zig-out/bin` directories. It does not build missing
+variants and ignores any custom install prefix.
+
+`zig-sdl3` v0.2.3 is pinned in `build.zig.zon` and builds SDL 3.4.18 from source.
+Application code uses its Zig API: typed windows, renderers, textures, events,
+keyboard modifiers, dialogs, and clipboard callbacks. It does not use the `c`
+module or declare SDL ABI types. Core tests exercise rendering/readback, UTF-8
+keyboard editing, and binary PNG clipboard data with ownership cleanup.
+The build applies one targeted v0.2.3 fix to generated inputs: its slice-based
+clipboard callback must use the Zig calling convention. The fetched package
+is untouched, and the patch checks the pinned signature before applying.
 The native FreeType/Expat headers use Zig's built-in `addTranslateC`.
 
 ## Design
@@ -88,8 +101,10 @@ separate from the executable.
 Default thresholds come from the local `gzzz` reference. Lucide icons come from
 `gpui-kit-assets` 0.7.3 (see `assets/icons/LICENSE-LUCIDE`); window controls are
 the Breeze SVGs used by GPUI (see `assets/icons/BREEZE-LICENSE` and
-`assets/icons/GPUI-LICENSE`). Run `assets/icons/build.sh` (ImageMagick) to
-rasterize the SVGs into the embedded 128 px RGBA masks.
+`assets/icons/GPUI-LICENSE`). SVG sources are embedded directly and rasterized
+at startup by SDL_image through zig-sdl3. The renderer caches white masks at
+128, 64, and 32 px for tinting and smooth scaling; no generated icon assets or
+ImageMagick conversion step is needed.
 
 Noto Sans Regular, Medium, and SemiBold are embedded with their license in
 `assets/FONT-LICENSE`. Liberation Mono (metric-compatible with Courier New, the
