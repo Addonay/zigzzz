@@ -108,8 +108,9 @@ const font_specs = [_]FontSpec{
 
 const role_count = font_specs.len;
 
-/// Glyphs are rasterised at three times their logical size.
-const oversample: f32 = 3;
+/// Glyphs are rasterised at least three times their logical size; on dense
+/// displays more, so text stays sharp after scaling (see `bakeAll`).
+const minimum_oversample: f32 = 3;
 
 const Glyph = struct {
     source: Rect = .{},
@@ -123,6 +124,22 @@ const Font = struct {
     glyphs: [256]Glyph,
     size: f32,
     baseline: f32,
+    /// Atlas texels per logical pixel.
+    oversample: f32,
+};
+
+/// What the interface fonts are baked for.
+pub const TextSettings = struct {
+    /// The Settings "Text size", 12–24 px with 16 as normal.
+    size: u32 = 16,
+    /// System text size multiplier (Windows Accessibility → Text size).
+    system: f32 = 1,
+    /// Output pixels per logical pixel.
+    pixels: f32 = 1,
+
+    fn eql(self: TextSettings, other: TextSettings) bool {
+        return self.size == other.size and self.system == other.system and self.pixels == other.pixels;
+    }
 };
 
 const ShadowKey = struct { radius: u8, blur: u8 };
@@ -133,7 +150,7 @@ const ShadowEntry = struct {
     edge: f32,
 };
 
-const icon_levels = [_]usize{ 128, 64, 32 };
+const icon_levels = [_]usize{ 256, 128, 64, 32 };
 
 pub const Renderer = struct {
     allocator: std.mem.Allocator,
@@ -142,6 +159,7 @@ pub const Renderer = struct {
     library: ft.FT_Library,
 
     fonts: [role_count]Font = undefined,
+    text_settings: TextSettings = .{},
     icons: [assets.icons.len][icon_levels.len]sdl.render.Texture = undefined,
 
     rounded: [33]?sdl.render.Texture = @splat(null),
@@ -161,7 +179,7 @@ pub const Renderer = struct {
     vertices: std.ArrayList(sdl.render.Vertex) = .empty,
     indices: std.ArrayList(c_int) = .empty,
 
-    pub fn init(allocator: std.mem.Allocator, window: sdl.video.Window) !Renderer {
+    pub fn init(allocator: std.mem.Allocator, window: sdl.video.Window, settings: TextSettings) !Renderer {
         var library: ft.FT_Library = null;
         if (ft.FT_Init_FreeType(&library) != 0) return error.FontLibrary;
         errdefer _ = ft.FT_Done_FreeType(library);
@@ -174,12 +192,13 @@ pub const Renderer = struct {
             .window = window,
             .handle = handle,
             .library = library,
+            .text_settings = settings,
         };
 
         self.vsync = if (handle.setVSync(.{ .on_each_num_refresh = 1 })) true else |_| false;
         try handle.setDrawBlendMode(.blend);
 
-        self.fonts = try self.bakeAll(16);
+        self.fonts = try self.bakeAll(self.text_settings);
 
         for (assets.icons, 0..) |svg, index| {
             self.icons[index] = try self.iconMips(svg);
@@ -225,22 +244,38 @@ pub const Renderer = struct {
     /// Re-bake the interface fonts for a text size between 12 and 24 px.
     /// Chart fonts keep their fixed size so plots stay comparable.
     pub fn setTextSize(self: *Renderer, size: u32) !void {
-        const fonts = try self.bakeAll(size);
+        var settings = self.text_settings;
+        settings.size = size;
+        try self.configureText(settings);
+    }
+
+    /// Re-bake the fonts when the text size, the system text scale, or the
+    /// display's pixel density changes. Unchanged settings cost nothing.
+    pub fn configureText(self: *Renderer, settings: TextSettings) !void {
+        if (settings.eql(self.text_settings)) return;
+
+        const fonts = try self.bakeAll(settings);
 
         for (self.fonts) |font| font.texture.deinit();
         self.fonts = fonts;
+        self.text_settings = settings;
     }
 
-    fn bakeAll(self: *Renderer, size: u32) ![role_count]Font {
+    fn bakeAll(self: *Renderer, settings: TextSettings) ![role_count]Font {
         var fonts: [role_count]Font = undefined;
         var ready: usize = 0;
         errdefer for (fonts[0..ready]) |font| font.texture.deinit();
 
-        const scale = f(size) / 16;
+        // Interface text follows both the Settings text size and the
+        // system's, capped where fixed-height rows would start clipping.
+        const scale = std.math.clamp(f(settings.size) / 16 * settings.system, 0.75, 2);
+
+        // The frame is drawn at twice the output resolution.
+        const oversample = std.math.clamp(@ceil(settings.pixels * 2), minimum_oversample, 8);
 
         for (font_specs, 0..) |spec, index| {
             const font_size = if (spec.scales) @round(spec.size * scale * 2) / 2 else spec.size;
-            fonts[index] = try self.bake(spec.face, font_size);
+            fonts[index] = try self.bake(spec.face, font_size, oversample);
             ready += 1;
         }
 
@@ -311,7 +346,20 @@ pub const Renderer = struct {
         };
     }
 
-    fn bake(self: *Renderer, face_kind: Face, size: f32) !Font {
+    /// Bake a font into the smallest atlas that holds every glyph; large
+    /// text on dense displays needs more room.
+    fn bake(self: *Renderer, face_kind: Face, size: f32, oversample: f32) !Font {
+        for ([_]usize{ 1024, 2048, 4096 }) |atlas_side| {
+            return self.bakeAtlas(face_kind, size, oversample, atlas_side) catch |err| switch (err) {
+                error.FontAtlasFull => continue,
+                else => return err,
+            };
+        }
+
+        return error.FontAtlasFull;
+    }
+
+    fn bakeAtlas(self: *Renderer, face_kind: Face, size: f32, oversample: f32, atlas_side: usize) !Font {
         const data = faceData(face_kind);
 
         var face: ft.FT_Face = null;
@@ -320,13 +368,13 @@ pub const Renderer = struct {
 
         _ = ft.FT_Set_Pixel_Sizes(face, 0, @intFromFloat(@round(size * oversample)));
 
-        const atlas_side: usize = if (size > 18) 2048 else 1024;
         const pixels = try self.allocator.alloc(u8, atlas_side * atlas_side * 4);
         defer self.allocator.free(pixels);
         @memset(pixels, 0);
 
         var result: Font = undefined;
         result.size = size;
+        result.oversample = oversample;
 
         const ascent = f(face.*.size.*.metrics.ascender) / 64 / oversample;
         const descent = -f(face.*.size.*.metrics.descender) / 64 / oversample;
@@ -959,8 +1007,8 @@ pub const Renderer = struct {
                 const destination = (Rect{
                     .x = position + glyph.left,
                     .y = y + selected.baseline + glyph.top,
-                    .w = glyph.source.w / oversample,
-                    .h = glyph.source.h / oversample,
+                    .w = glyph.source.w / selected.oversample,
+                    .h = glyph.source.h / selected.oversample,
                 }).native();
 
                 self.handle.renderTexture(selected.texture, source, destination) catch {};
@@ -1073,8 +1121,8 @@ pub const Renderer = struct {
             const destination = (Rect{
                 .x = x + dx * @cos(radians) - dy * @sin(radians),
                 .y = y + dx * @sin(radians) + dy * @cos(radians),
-                .w = glyph.source.w / oversample,
-                .h = glyph.source.h / oversample,
+                .w = glyph.source.w / selected.oversample,
+                .h = glyph.source.h / selected.oversample,
             }).native();
 
             self.handle.renderTextureRotated(selected.texture, source, destination, degrees, center, .{}) catch {};
@@ -1090,8 +1138,11 @@ pub const Renderer = struct {
         const pixels = size * @max(scale_x, scale_y);
         const levels = self.icons[@backingInt(which)];
 
-        if (pixels <= 40) return levels[2];
-        if (pixels <= 80) return levels[1];
+        // The nearest level at or above the drawn size, so icons are only
+        // ever minified a little (levels are 256, 128, 64, and 32 px).
+        if (pixels <= 40) return levels[3];
+        if (pixels <= 80) return levels[2];
+        if (pixels <= 160) return levels[1];
         return levels[0];
     }
 

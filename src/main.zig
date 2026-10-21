@@ -5,6 +5,7 @@ const Renderer = @import("render.zig").Renderer;
 const chrome = @import("window.zig");
 const theme = @import("theme.zig");
 const exporter = @import("export.zig");
+const Scale = @import("scale.zig").Scale;
 const f = @import("geometry.zig").f;
 const assets = @import("assets");
 const build_options = @import("build_options");
@@ -46,11 +47,14 @@ fn run(init: std.process.Init) !void {
         .transparent = true,
     });
     defer window.deinit();
-    try window.setMinimumSize(theme.minimum_width, theme.minimum_height);
 
     setWindowIcon(window);
 
-    var renderer = try Renderer.init(init.gpa, window);
+    // Size the window for the display's scaling before showing anything.
+    var scale = Scale.read(window);
+    fitWindow(window, scale);
+
+    var renderer = try Renderer.init(init.gpa, window, .{ .system = scale.text, .pixels = scale.pixels });
     defer renderer.deinit();
 
     const app = try init.gpa.create(App);
@@ -58,6 +62,9 @@ fn run(init: std.process.Init) !void {
 
     try app.init(init.gpa, init.io, window, &renderer);
     defer app.deinit();
+
+    app.scale = scale;
+    app.chrome.scale = scale.ui;
 
     try window.setHitTest(chrome.Chrome, chrome.hitTest, &app.chrome);
     try sdl.keyboard.startTextInput(window);
@@ -82,20 +89,48 @@ fn run(init: std.process.Init) !void {
         previous = now;
 
         app.ui.resetEvents();
-        _, app.ui.mouse_x, app.ui.mouse_y = sdl.mouse.getState();
+
+        const mouse_x, const mouse_y = blk: {
+            _, const x, const y = sdl.mouse.getState();
+            break :blk .{ x, y };
+        };
+
+        app.ui.mouse_x = mouse_x / app.scale.ui;
+        app.ui.mouse_y = mouse_y / app.scale.ui;
+
         while (sdl.events.poll()) |event| app.event(event);
+
+        if (app.scale_changed) {
+            app.scale_changed = false;
+
+            // Moved to another monitor, or the system scale changed.
+            const latest = Scale.read(window);
+
+            if (!latest.eql(scale)) {
+                scale = latest;
+                app.scale = scale;
+                app.chrome.scale = scale.ui;
+                setMinimumSize(window, scale);
+
+                var text_settings = renderer.text_settings;
+                text_settings.system = scale.text;
+                text_settings.pixels = scale.pixels;
+                renderer.configureText(text_settings) catch |err| app.failure(err);
+            }
+        }
 
         if (window.getFlags().minimized) {
             sdl.timer.delayMilliseconds(40);
             continue;
         }
 
-        try shape.update(init.gpa, window);
+        try shape.update(init.gpa, window, scale.ui);
 
+        // Lay out in logical pixels; the renderer scales them to the window.
         const width, const height = try window.getSize();
 
-        app.width = f(width);
-        app.height = f(height);
+        app.width = f(width) / scale.ui;
+        app.height = f(height) / scale.ui;
 
         try renderer.begin(app.width, app.height, app.palette().background);
         app.draw();
@@ -134,6 +169,35 @@ fn run(init: std.process.Init) !void {
     }
 }
 
+/// Open at the design size scaled for the display, never larger than the
+/// usable screen area, and centred.
+fn fitWindow(window: sdl.video.Window, scale: Scale) void {
+    var width = f(theme.initial_width) * scale.ui;
+    var height = f(theme.initial_height) * scale.ui;
+
+    if (window.getDisplayForWindow()) |display| {
+        if (display.getUsableBounds()) |bounds| {
+            width = @min(width, f(bounds.w) * 0.92);
+            height = @min(height, f(bounds.h) * 0.92);
+        } else |_| {}
+    } else |_| {}
+
+    setMinimumSize(window, scale);
+
+    const minimum_width = f(theme.minimum_width) * scale.ui;
+    const minimum_height = f(theme.minimum_height) * scale.ui;
+
+    window.setSize(@intFromFloat(@max(width, minimum_width)), @intFromFloat(@max(height, minimum_height))) catch {};
+    window.setPosition(.{ .centered = null }, .{ .centered = null }) catch {};
+}
+
+fn setMinimumSize(window: sdl.video.Window, scale: Scale) void {
+    const width: usize = @intFromFloat(@round(f(theme.minimum_width) * scale.ui));
+    const height: usize = @intFromFloat(@round(f(theme.minimum_height) * scale.ui));
+
+    window.setMinimumSize(width, height) catch {};
+}
+
 /// Taskbar and title icon from the embedded logo. Purely cosmetic, so a
 /// failure leaves the platform default in place.
 fn setWindowIcon(window: sdl.video.Window) void {
@@ -157,4 +221,5 @@ test {
     _ = @import("ui.zig");
     _ = @import("chart_image.zig");
     _ = @import("regex.zig");
+    _ = @import("scale.zig");
 }

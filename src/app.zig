@@ -14,6 +14,7 @@ const settings = @import("settings.zig");
 const charts = @import("charts.zig");
 const kml = @import("kml.zig");
 const regex = @import("regex.zig");
+const Scale = @import("scale.zig").Scale;
 
 const Rect = geo.Rect;
 const Color = geo.Color;
@@ -94,6 +95,10 @@ pub const App = struct {
     dialog_page: Page = .qos,
     dialog_kind: DialogKind = .file,
     dialog_location: [1024:0]u8 = @splat(0),
+
+    /// System display and text scaling (see scale.zig).
+    scale: Scale = .{},
+    scale_changed: bool = false,
 
     /// Scrollable part of the sidebar's context section, if any.
     sidebar_list: Rect = .{},
@@ -235,19 +240,25 @@ pub const App = struct {
     pub fn event(self: *App, event_value: sdl.events.Event) void {
         switch (event_value) {
             .quit, .window_close_requested => self.quit = true,
+            // Mouse positions arrive in window coordinates; the interface
+            // works in logical pixels.
             .mouse_button_down => |button| {
                 if (button.button != .left) return;
-                self.ui.press(button.x, button.y);
-                if (self.atSidebarEdge(button.x)) self.resize_sidebar = true;
+                const x = button.x / self.scale.ui;
+                const y = button.y / self.scale.ui;
+
+                self.ui.press(x, y);
+                if (self.atSidebarEdge(x)) self.resize_sidebar = true;
             },
             .mouse_button_up => |button| {
                 if (button.button != .left) return;
-                self.ui.release(button.x, button.y);
+                self.ui.release(button.x / self.scale.ui, button.y / self.scale.ui);
                 self.resize_sidebar = false;
             },
             .mouse_motion => |motion| {
-                if (self.resize_sidebar) self.chrome.sidebar_width = std.math.clamp(motion.x, 200, 360);
+                if (self.resize_sidebar) self.chrome.sidebar_width = std.math.clamp(motion.x / self.scale.ui, 200, 360);
             },
+            .window_display_scale_changed, .display_content_scale_changed, .window_display_changed => self.scale_changed = true,
             .mouse_wheel => |wheel| {
                 if (self.popup.open) {
                     self.popup.scroll = @max(0, self.popup.scroll - wheel.scroll_y * 40);
@@ -688,13 +699,26 @@ pub const App = struct {
             const amount = self.ui.hoverAmount(rect);
             const closing = index == 2;
 
-            if (amount > 0.01) {
-                const fill = if (closing) p.destructive else p.accent;
-                r.box(rect.inset(2), fade(fill, amount), theme.radius);
-            }
+            if (chrome_module.native_caption) {
+                // Windows 11: square, full-height buttons; close turns red.
+                const pressed = self.ui.isPressed(rect);
+                const windows_red: geo.Color = .{ 196, 43, 28, 255 };
+                const fill = if (closing) windows_red else fade(p.foreground, if (pressed) 0.12 else 0.07);
 
-            const tint = if (closing and amount > 0.5) p.destructive_foreground else p.muted_foreground;
-            r.icon(icon, rect.centered(16), tint);
+                if (amount > 0.01) r.box(rect, fade(fill, amount), 0);
+
+                const white: geo.Color = .{ 255, 255, 255, 255 };
+                const tint = if (closing and amount > 0.5) white else p.foreground;
+                r.icon(icon, rect.centered(14), tint);
+            } else {
+                if (amount > 0.01) {
+                    const fill = if (closing) p.destructive else p.accent;
+                    r.box(rect.inset(2), fade(fill, amount), theme.radius);
+                }
+
+                const tint = if (closing and amount > 0.5) p.destructive_foreground else p.muted_foreground;
+                r.icon(icon, rect.centered(16), tint);
+            }
 
             if (clicked) {
                 switch (index) {

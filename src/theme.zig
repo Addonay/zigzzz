@@ -8,8 +8,12 @@
 const std = @import("std");
 const Color = @import("geometry.zig").Color;
 
+/// Sizes are logical pixels; the window scales them for the display.
 pub const toolbar_height: f32 = 52;
-pub const corner_radius: f32 = 12;
+
+/// Windows 11 rounds windows by 8 px; other desktops get a softer corner.
+pub const corner_radius: f32 = if (@import("builtin").os.tag == .windows) 8 else 12;
+
 pub const initial_width: c_int = 1280;
 pub const initial_height: c_int = 820;
 pub const minimum_width: c_int = 760;
