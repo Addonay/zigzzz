@@ -60,7 +60,7 @@ pub const Overlay = struct {
 const RawRule = struct { name: []const u8, operator: []const u8, value: f64 };
 const RawGroup = struct { name: []const u8, kpis: []const []const u8 };
 const Raw = struct {
-    dark: bool = true,
+    dark: bool = false,
     font_size: u32 = 16,
     sidebar_open: bool = true,
     global_days: u32 = 30,
@@ -75,7 +75,7 @@ const Raw = struct {
 };
 
 pub const Preferences = struct {
-    dark: bool = true,
+    dark: bool = false,
     font_size: Text = .init("16"),
     sidebar_open: bool = true,
     global_days: Text = .init("30"),
@@ -562,7 +562,7 @@ test "settings survive an atomic round trip" {
     const p = try allocator.create(Preferences);
     defer allocator.destroy(p);
     try p.defaults(allocator);
-    p.dark = false;
+    p.dark = true;
     p.groups[0] = .{ .name = .init("Radio") };
     p.groups[0].members[0] = true;
     p.group_count = 1;
@@ -575,11 +575,28 @@ test "settings survive an atomic round trip" {
     const loaded = try allocator.create(Preferences);
     defer allocator.destroy(loaded);
     try loaded.load(allocator, std.testing.io, path);
-    try std.testing.expectEqual(false, loaded.dark);
+    try std.testing.expectEqual(true, loaded.dark);
     try std.testing.expectEqual(p.rule_count, loaded.rule_count);
     try std.testing.expectEqual(@as(usize, 1), loaded.group_count);
     try std.testing.expect(loaded.groups[0].members[0]);
     try std.testing.expect(loaded.overlays[0].members[1]);
+}
+
+test "light mode is the default" {
+    const allocator = std.testing.allocator;
+    const p = try allocator.create(Preferences);
+    defer allocator.destroy(p);
+
+    try p.defaults(allocator);
+    try std.testing.expect(!p.dark);
+
+    // Settings files without a theme also open in light mode.
+    const path = "/tmp/zigzzz-test-theme.json";
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, path) catch {};
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = path, .data = "{\"font_size\": 16}" });
+
+    try p.load(allocator, std.testing.io, path);
+    try std.testing.expect(!p.dark);
 }
 
 test "default groups use short names and stay seeded" {
