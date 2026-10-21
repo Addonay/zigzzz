@@ -33,6 +33,15 @@ git push origin v0.1.1
 
 GitHub Actions builds every package and publishes the release.
 
+## Settings
+
+On Windows, settings are stored in `%APPDATA%\zigzzz\settings.json`. The native
+roaming folder is resolved through SDL, so redirected profiles and Unicode
+usernames work. Linux uses `$XDG_CONFIG_HOME/zigzzz/settings.json`, or
+`~/.config/zigzzz/settings.json` when that variable is unset.
+
+Set `ZIGZZZ_SETTINGS_PATH` to a file path to override the location on either OS.
+
 ## License
 
 Copyright (c) 2026 Addonay. All rights reserved. See [LICENSE](LICENSE).

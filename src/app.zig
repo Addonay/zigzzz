@@ -136,16 +136,7 @@ pub const App = struct {
     }
 
     fn settingsPath(allocator: std.mem.Allocator) ![]const u8 {
-        if (std.c.getenv("ZIGZZZ_SETTINGS_PATH")) |value| {
-            return allocator.dupe(u8, std.mem.span(value));
-        }
-
-        if (std.c.getenv("XDG_CONFIG_HOME")) |value| {
-            return allocator.print("{s}/zigzzz/settings.json", .{std.mem.span(value)});
-        }
-
-        const home_dir = if (std.c.getenv("HOME")) |value| std.mem.span(value) else "/tmp";
-        return allocator.print("{s}/.config/zigzzz/settings.json", .{home_dir});
+        return @import("settings_path.zig").resolve(allocator);
     }
 
     pub fn deinit(self: *App) void {
@@ -709,7 +700,7 @@ pub const App = struct {
 
                 const white: geo.Color = .{ 255, 255, 255, 255 };
                 const tint = if (closing and amount > 0.5) white else p.foreground;
-                r.icon(icon, rect.centered(14), tint);
+                r.icon(icon, rect.centered(20), tint);
             } else {
                 if (amount > 0.01) {
                     const fill = if (closing) p.destructive else p.accent;

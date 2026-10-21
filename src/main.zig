@@ -212,6 +212,7 @@ fn setWindowIcon(window: sdl.video.Window) void {
 
 // Discover tests beside their implementations without running the application.
 test {
+    _ = @import("settings_path.zig");
     _ = @import("text.zig");
     _ = @import("preferences.zig");
     _ = @import("report.zig");
