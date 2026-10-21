@@ -2,7 +2,7 @@
 #
 # Release: bump .version in build.zig.zon, commit, then
 #
-#     git tag v0.1.0 && git push origin v0.1.0
+#     git tag vX.Y.Z && git push origin vX.Y.Z
 #
 # Run it from the Actions tab ("Run workflow") for a dry run: the packages
 # are built and attached to the run as an artifact, but nothing is released.
@@ -73,7 +73,7 @@ jobs:
             gh release upload "$tag" dist/release/* --clobber
           else
             gh release create "$tag" dist/release/* \
-              --title "Workspace ${tag#v}" \
-              --generate-notes \
+              --title "zigzzz ${tag#v}" \
+              --notes "zigzzz ${tag#v}" \
               --verify-tag
           fi

@@ -85,7 +85,7 @@ linux_stage() {
     install -m755 "$bin" "$dest/zigzzz"
     install -m644 "packaging/linux/$app_id.desktop" "$dest/"
     cp packaging/icons/zigzzz-*.png "$dest/icons/"
-    cp assets/FONT-LICENSE assets/MONO-FONT-LICENSE "$dest/licenses/"
+    cp LICENSE assets/FONT-LICENSE assets/MONO-FONT-LICENSE "$dest/licenses/"
     cp assets/icons/BREEZE-LICENSE assets/icons/GPUI-LICENSE assets/icons/LICENSE-LUCIDE "$dest/licenses/"
 }
 

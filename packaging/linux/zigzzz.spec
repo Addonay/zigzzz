@@ -16,8 +16,8 @@
 Name:           zigzzz
 Version:        %{pkg_version}
 Release:        1
-Summary:        Workspace: QoS KPI charts and KML generation
-License:        LicenseRef-Unspecified AND Apache-2.0 AND OFL-1.1 AND ISC AND LGPL-3.0-or-later AND GPL-3.0-only
+Summary:        Workspace
+License:        LicenseRef-Proprietary AND Apache-2.0 AND OFL-1.1 AND ISC AND LGPL-3.0-or-later AND GPL-3.0-only
 URL:            https://github.com/Addonay/zigzzz
 
 # SDL3, SDL_image, FreeType, and Expat are linked in; only glibc is needed.
@@ -26,9 +26,7 @@ AutoReqProv:    no
 Requires:       glibc >= 2.31
 
 %description
-Workspace is a native desktop app for analysing QoS KPI reports against
-thresholds, with Chart.js-style charts, KPI groups, overlays, and Excel
-exports, and for generating KML site and sector layers from spreadsheets.
+zigzzz — Workspace.
 
 %install
 install -Dm755 %{stage}/zigzzz %{buildroot}%{_bindir}/zigzzz

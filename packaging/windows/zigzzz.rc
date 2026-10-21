@@ -1,13 +1,12 @@
-// Windows resources: the application icon shown by Explorer and the
-// taskbar, and the version details shown under File Properties.
+// Windows resources: the application icon and the File Properties details.
 
 #include <winver.h>
 
 1 ICON "../icons/zigzzz.ico"
 
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION     0, 1, 0, 0
-PRODUCTVERSION  0, 1, 0, 0
+FILEVERSION     0, 1, 1, 0
+PRODUCTVERSION  0, 1, 1, 0
 FILEOS          VOS_NT_WINDOWS32
 FILETYPE        VFT_APP
 BEGIN
@@ -16,12 +15,13 @@ BEGIN
         BLOCK "040904B0"
         BEGIN
             VALUE "CompanyName",      "Addonay"
-            VALUE "FileDescription",  "Workspace — QoS KPI charts and KML generation"
-            VALUE "FileVersion",      "0.1.0"
+            VALUE "FileDescription",  "Workspace"
+            VALUE "FileVersion",      "0.1.1"
             VALUE "InternalName",     "zigzzz"
+            VALUE "LegalCopyright",   "Copyright (c) 2026 Addonay. All rights reserved."
             VALUE "OriginalFilename", "zigzzz.exe"
-            VALUE "ProductName",      "Workspace"
-            VALUE "ProductVersion",   "0.1.0"
+            VALUE "ProductName",      "zigzzz"
+            VALUE "ProductVersion",   "0.1.1"
         END
     END
 
